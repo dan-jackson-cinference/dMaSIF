@@ -1,0 +1,41 @@
+---
+
+model_path: ""
+save_path: /home/danjackson/repos/dMaSIF/preds/dMaSIF_search_3layer_12A_16dim
+site: True
+search: True
+single_pdb: 1f6m_F_H
+pdb_list: ""
+profile: False
+seed: 42
+random_rotation: False
+single_protein: False
+validation_fraction: 0.1
+feature_cfg:
+    resolution: 1.0
+    sup_sampling: 20
+    distance: 1.05
+    no_chem: False
+    no_geom: False
+    curvature_scales: [1.0, 2.0, 3.0, 5.0, 10.0] 
+geometry_cfg:
+    variance: 0.1
+model_cfg:
+    atom_dims: 6
+    embedding_layer: dMaSIF
+    emb_dims: 8
+    in_channels: 16
+    orientation_units: 16
+    unet_hidden_channels: 8
+    post_units: 8
+    n_layers: 3
+    radius: 9.0
+    knn: 40
+    dropout: 0.0
+    use_mesh: False
+training_cfg:
+    n_epochs: 50
+    batch_size: 1
+    lr: 0.0001
+    restart_training: ""
+    n_roc_auc_samples: 100

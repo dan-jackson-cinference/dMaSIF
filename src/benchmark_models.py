@@ -1,26 +1,14 @@
 import torch
 import torch.nn.functional as F
-import torch.nn as nn
-from torch.nn import (
-    Sequential as Seq,
-    Dropout,
-    Linear as Lin,
-    LeakyReLU,
-    ReLU,
-    BatchNorm1d as BN,
-)
-import torch_geometric.transforms as T
-from torch_geometric.data import DataLoader
+from pykeops.torch import LazyTensor
+from torch import Tensor, nn
 from torch_geometric.nn import (
     DynamicEdgeConv,
-    PointConv,
-    XConv,
-    fps,
-    radius,
+    PointNetConv,
     global_max_pool,
     knn_interpolate,
+    radius,
 )
-from pykeops.torch import LazyTensor
 
 from benchmark_layers import MyDynamicEdgeConv, MyXConv
 from geometry_processing import dMaSIFConv, mesh_normals_areas, tangent_vectors
@@ -33,14 +21,14 @@ DEConv = {"torch": DynamicEdgeConv, "keops": MyDynamicEdgeConv}
 # the original paper.
 
 
-def MLP(channels, batch_norm=True):
+def MLP(channels: list[int], batch_norm: bool = True):
     """Multi-layer perceptron, with ReLU non-linearities and batch normalization."""
-    return Seq(
+    return nn.Sequential(
         *[
-            Seq(
-                Lin(channels[i - 1], channels[i]),
-                BN(channels[i]) if batch_norm else nn.Identity(),
-                LeakyReLU(negative_slope=0.2),
+            nn.Sequential(
+                nn.Linear(channels[i - 1], channels[i]),
+                nn.BatchNorm1d(channels[i]) if batch_norm else nn.Identity(),
+                nn.LeakyReLU(negative_slope=0.2),
             )
             for i in range(1, len(channels))
         ]
@@ -49,7 +37,13 @@ def MLP(channels, batch_norm=True):
 
 class DGCNN_seg(torch.nn.Module):
     def __init__(
-        self, in_channels, out_channels, n_layers, k=40, aggr="max", backend="keops"
+        self,
+        in_channels: int,
+        out_channels: int,
+        n_layers: int,
+        knn: int = 40,
+        aggr: str = "max",
+        backend: str = "keops",
     ):
         super(DGCNN_seg, self).__init__()
 
@@ -60,16 +54,16 @@ class DGCNN_seg(torch.nn.Module):
         )  # Add coordinates to input channels
         self.n_layers = n_layers
 
-        self.transform_1 = DEConv[backend](MLP([2 * 3, 64, 128]), k, aggr)
+        self.transform_1 = DEConv[backend](MLP([2 * 3, 64, 128]), knn, aggr)
         self.transform_2 = MLP([128, 1024])
         self.transform_3 = MLP([1024, 512, 256], batch_norm=False)
-        self.transform_4 = Lin(256, 3 * 3)
+        self.transform_4 = nn.Linear(256, 3 * 3)
 
         self.conv_layers = nn.ModuleList(
-            [DEConv[backend](MLP([2 * self.I, self.O, self.O]), k, aggr)]
+            [DEConv[backend](MLP([2 * self.I, self.O, self.O]), knn, aggr)]
             + [
-                DEConv[backend](MLP([2 * self.O, self.O, self.O]), k, aggr)
-                for i in range(n_layers - 1)
+                DEConv[backend](MLP([2 * self.O, self.O, self.O]), knn, aggr)
+                for _ in range(n_layers - 1)
             ]
         )
 
@@ -78,13 +72,13 @@ class DGCNN_seg(torch.nn.Module):
                 nn.Sequential(
                     nn.Linear(self.O, self.O), nn.ReLU(), nn.Linear(self.O, self.O)
                 )
-                for i in range(n_layers)
+                for _ in range(n_layers)
             ]
         )
 
         self.linear_transform = nn.ModuleList(
             [nn.Linear(self.I, self.O)]
-            + [nn.Linear(self.O, self.O) for i in range(n_layers - 1)]
+            + [nn.Linear(self.O, self.O) for _ in range(n_layers - 1)]
         )
 
     def forward(self, positions, features, batch_indices):
@@ -128,7 +122,7 @@ class SAModule(torch.nn.Module):
         super(SAModule, self).__init__()
         self.ratio = ratio
         self.r = r
-        self.conv = PointConv(nn)
+        self.conv = PointNetConv(nn)
         self.max_num_neighbors = max_num_neighbors
 
     def forward(self, x, pos, batch):
@@ -183,36 +177,49 @@ class FPModule(torch.nn.Module):
 
 
 class PointNet2_seg(torch.nn.Module):
-    def __init__(self, args, in_channels, out_channels):
+    def __init__(
+        self, in_channels: int, out_channels: int, radius: float, n_layers: int
+    ):
         super(PointNet2_seg, self).__init__()
 
         self.name = "PointNet2"
-        self.I, self.O = in_channels, out_channels
-        self.radius = args.radius
         self.k = 10000  # We don't restrict the number of points in a patch
-        self.n_layers = args.n_layers
 
         # self.sa1_module = SAModule(1.0, self.radius, MLP([self.I+3, self.O, self.O]),self.k)
         self.layers = nn.ModuleList(
-            [SAModule(1.0, self.radius, MLP([self.I + 3, self.O, self.O]), self.k)]
+            [
+                SAModule(
+                    1.0,
+                    radius,
+                    MLP([in_channels + 3, out_channels, out_channels]),
+                    self.k,
+                )
+            ]
             + [
-                SAModule(1.0, self.radius, MLP([self.O + 3, self.O, self.O]), self.k)
-                for i in range(self.n_layers - 1)
+                SAModule(
+                    1.0,
+                    radius,
+                    MLP([out_channels + 3, out_channels, out_channels]),
+                    self.k,
+                )
+                for _ in range(n_layers - 1)
             ]
         )
 
         self.linear_layers = nn.ModuleList(
             [
                 nn.Sequential(
-                    nn.Linear(self.O, self.O), nn.ReLU(), nn.Linear(self.O, self.O)
+                    nn.Linear(out_channels, out_channels),
+                    nn.ReLU(),
+                    nn.Linear(out_channels, out_channels),
                 )
-                for i in range(self.n_layers)
+                for _ in range(n_layers)
             ]
         )
 
         self.linear_transform = nn.ModuleList(
-            [nn.Linear(self.I, self.O)]
-            + [nn.Linear(self.O, self.O) for i in range(self.n_layers - 1)]
+            [nn.Linear(in_channels, out_channels)]
+            + [nn.Linear(out_channels, out_channels) for _ in range(n_layers - 1)]
         )
 
     def forward(self, positions, features, batch_indices):
@@ -230,51 +237,76 @@ class PointNet2_seg(torch.nn.Module):
 ## TangentConv benchmark segmentation
 
 
+class DMaSIFConvBlock(torch.nn.Module):
+    """Performs geodesic convolution on the point cloud"""
+
+    def __init__(self, in_channels: int, out_channels: int, radius: float):
+        super().__init__()
+        self.linear_transform = nn.Linear(in_channels, out_channels)
+        self.dmasif_conv = dMaSIFConv(in_channels, out_channels, radius, out_channels)
+        self.linear_block = nn.Sequential(
+            nn.Linear(out_channels, out_channels),
+            nn.ReLU(),
+            nn.Linear(out_channels, out_channels),
+        )
+
+    def forward(self, features: Tensor, points: Tensor, nuv: Tensor, ranges: Tensor):
+        x = features
+        x_i = self.dmasif_conv(points, nuv, x, ranges)
+        x_i = self.linear_transform(features)
+        x_i = self.linear_block(x_i)
+        # x_i += x
+        return x_i
+
+
 class dMaSIFConv_seg(torch.nn.Module):
-    def __init__(self, args, in_channels, out_channels, n_layers, radius=9.0):
-        super(dMaSIFConv_seg, self).__init__()
+    def __init__(
+        self, in_channels: int, out_channels: int, n_layers: int, radius: float
+    ):
+        super().__init__()
 
         self.name = "dMaSIFConv_seg_keops"
         self.radius = radius
-        self.I, self.O = in_channels, out_channels
 
-        self.layers = nn.ModuleList(
-            [dMaSIFConv(self.I, self.O, radius, self.O)]
-            + [dMaSIFConv(self.O, self.O, radius, self.O) for i in range(n_layers - 1)]
-        )
-
-        self.linear_layers = nn.ModuleList(
-            [
-                nn.Sequential(
-                    nn.Linear(self.O, self.O), nn.ReLU(), nn.Linear(self.O, self.O)
-                )
-                for i in range(n_layers)
+        self.blocks = nn.ModuleList(
+            [DMaSIFConvBlock(in_channels, out_channels, radius)]
+            + [
+                DMaSIFConvBlock(out_channels, out_channels, radius)
+                for _ in range(n_layers - 1)
             ]
         )
 
-        self.linear_transform = nn.ModuleList(
-            [nn.Linear(self.I, self.O)]
-            + [nn.Linear(self.O, self.O) for i in range(n_layers - 1)]
-        )
-
-    def forward(self, features):
+    def forward(self, features: Tensor, points: Tensor, nuv: Tensor):
         # Lab: (B,), Pos: (N, 3), Batch: (N,)
-        points, nuv, ranges = self.points, self.nuv, self.ranges
         x = features
-        for i, layer in enumerate(self.layers):
-            x_i = layer(points, nuv, x, ranges)
-            x_i = self.linear_layers[i](x_i)
-            x = self.linear_transform[i](x)
-            x = x + x_i
 
+        for block in self.blocks:
+            x = block(x, points, nuv, self.ranges)
         return x
 
-    def load_mesh(self, xyz, triangles=None, normals=None, weights=None, batch=None):
+    ### ORIGINAL CODE - THIS IS NOT DESCRIBED IN THE ARCHITECTURE IN THE PAPER
+    # def forward(self, features: Tensor, nuv: Tensor):
+    #     # Lab: (B,), Pos: (N, 3), Batch: (N,)
+    #     x = features
+    #     for i, layer in enumerate(self.layers):
+    #         x_i = layer(self.points, nuv, x, self.ranges)
+    #         x_i = self.linear_layers[i](x_i)
+    #         x = self.linear_transform[i](x)
+    #         x = x + x_i
+
+    #     return x
+
+    def load_mesh(
+        self,
+        xyz: Tensor | None,
+        normals: Tensor | None = None,
+        weights: Tensor | None = None,
+        batch: Tensor | None = None,
+    ) -> Tensor:
         """Loads the geometry of a triangle mesh.
 
         Input arguments:
         - xyz, a point cloud encoded as an (N, 3) Tensor.
-        - triangles, a connectivity matrix encoded as an (N, 3) integer tensor.
         - weights, importance weights for the orientation estimation, encoded as an (N, 1) Tensor.
         - radius, the scale used to estimate the local normals.
         - a batch vector, following PyTorch_Geometric's conventions.
@@ -286,22 +318,15 @@ class dMaSIFConv_seg(torch.nn.Module):
         """
 
         # 1. Save the vertices for later use in the convolutions ---------------
-        self.points = xyz
-        self.batch = batch
-        self.ranges = diagonal_ranges(
-            batch
-        )  # KeOps support for heterogeneous batch processing
-        self.triangles = triangles
-        self.normals = normals
-        self.weights = weights
+        points = xyz
+        # KeOps support for heterogeneous batch processing
+        self.ranges = diagonal_ranges(batch)
 
         # 2. Estimate the normals and tangent frame ----------------------------
         # Normalize the scale:
         points = xyz / self.radius
 
         # Normals and local areas:
-        if normals is None:
-            normals, areas = mesh_normals_areas(points, triangles, 0.5, batch)
         tangent_bases = tangent_vectors(normals)  # Tangent basis (N, 2, 3)
 
         # 3. Steer the tangent bases according to the gradient of "weights" ----
@@ -354,6 +379,4 @@ class dMaSIFConv_seg(torch.nn.Module):
         ).contiguous()  # (N, 6)
 
         # 4. Store the local 3D frame as an attribute --------------------------
-        self.nuv = torch.cat(
-            (normals.view(-1, 1, 3), tangent_bases.view(-1, 2, 3)), dim=1
-        )
+        return torch.cat((normals.view(-1, 1, 3), tangent_bases.view(-1, 2, 3)), dim=1)

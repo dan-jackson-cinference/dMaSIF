@@ -6,9 +6,7 @@ parser = argparse.ArgumentParser(description="Network parameters")
 parser.add_argument(
     "--experiment_name", type=str, help="Name of experiment", required=True
 )
-parser.add_argument(
-    "--use_mesh", type=bool, default=False, help="Use precomputed surfaces"
-)
+parser.add_argument("--use_mesh", action="store_true", help="Use precomputed surfaces")
 parser.add_argument(
     "--embedding_layer",
     type=str,
@@ -16,7 +14,7 @@ parser.add_argument(
     choices=["dMaSIF", "DGCNN", "PointNet++"],
     help="Which convolutional embedding layer to use",
 )
-parser.add_argument("--profile", type=bool, default=False, help="Profile code")
+parser.add_argument("--profile", action="store_true", help="Profile code")
 
 # Geometric parameters
 parser.add_argument(
@@ -57,7 +55,7 @@ parser.add_argument(
 parser.add_argument(
     "--emb_dims",
     type=int,
-    default=8,
+    default=16,
     help="Number of input features (+ 3 xyz coordinates for DGCNNs)",
 )
 parser.add_argument(
@@ -85,7 +83,7 @@ parser.add_argument(
     help="Number of hidden units for the post-processing MLP",
 )
 parser.add_argument(
-    "--n_layers", type=int, default=1, help="Number of convolutional layers"
+    "--n_layers", type=int, default=3, help="Number of convolutional layers"
 )
 parser.add_argument(
     "--radius", type=float, default=9.0, help="Radius to use for the convolution"
@@ -134,28 +132,25 @@ parser.add_argument(
 parser.add_argument("--seed", type=int, default=42, help="Random seed")
 parser.add_argument(
     "--random_rotation",
-    type=bool,
-    default=False,
+    action="store_true",
     help="Move proteins to center and add random rotation",
 )
 parser.add_argument(
     "--single_protein",
-    type=bool,
-    default=False,
+    action="store_true",
     help="Use single protein in a pair or both",
 )
 parser.add_argument("--site", type=bool, default=False, help="Predict interaction site")
 parser.add_argument(
     "--search",
-    type=bool,
-    default=False,
+    action="store_true",
     help="Predict matching between two partners",
 )
 parser.add_argument(
-    "--no_chem", type=bool, default=False, help="Predict without chemical information"
+    "--no_chem", action="store_true", help="Predict without chemical information"
 )
 parser.add_argument(
-    "--no_geom", type=bool, default=False, help="Predict without curvature information"
+    "--no_geom", action="store_true", help="Predict without curvature information"
 )
 parser.add_argument(
     "--single_pdb",

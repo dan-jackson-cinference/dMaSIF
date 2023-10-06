@@ -1,10 +1,11 @@
-import numpy as np
 from pathlib import Path
-from tqdm import tqdm
+
+import numpy as np
 from plyfile import PlyData, PlyElement
+from tqdm import tqdm
 
 
-def load_surface_np(fname, center):
+def load_surface_np(fname: Path, center: bool):
     """Loads a .ply mesh to return a point cloud and connectivity."""
 
     # Load the data, and read the connectivity information:
@@ -39,7 +40,8 @@ def load_surface_np(fname, center):
     }
 
 
-def convert_plys(ply_dir, npy_dir):
+def convert_plys(ply_dir: Path, npy_dir: Path):
+    """Convert .ply files to numpy arrays"""
     print("Converting PLYs")
     for p in tqdm(ply_dir.glob("*.ply")):
         protein = load_surface_np(p, center=False)
@@ -48,4 +50,3 @@ def convert_plys(ply_dir, npy_dir):
         np.save(npy_dir / (p.stem + "_features.npy"), protein["features"])
         np.save(npy_dir / (p.stem + "_iface_labels.npy"), protein["iface_labels"])
         np.save(npy_dir / (p.stem + "_normals.npy"), protein["normals"])
-

@@ -1,21 +1,18 @@
+import os
+from math import sqrt
+from typing import Optional
+
 import numpy as np
-from math import pi
 import torch
-from pykeops.torch import LazyTensor
-from plyfile import PlyData, PlyElement
-from helper import *
-import torch.nn as nn
 import torch.nn.functional as F
+from pykeops.torch import LazyTensor
+from pykeops.torch.cluster import grid_cluster
+from pyvtk import CellData, PointData, PolyData, Scalars, Vectors, VtkData
+from torch import Tensor, nn
 
-# from matplotlib import pyplot as plt
-from pykeops.torch.cluster import grid_cluster, cluster_ranges_centroids, from_matrix
-from math import pi, sqrt
-
+from helper import diagonal_ranges
 
 # Input-Output for tests =======================================================
-
-import os
-from pyvtk import PolyData, PointData, CellData, Scalars, Vectors, VtkData, PointData
 
 
 def save_vtk(
@@ -101,39 +98,40 @@ def subsample(x, batch=None, scale=1.0):
     """
 
     if batch is None:  # Single protein case:
-        if True:  # Use a fast scatter_add_ implementation
-            labels = grid_cluster(x, scale).long()
-            C = labels.max() + 1
+        labels = grid_cluster(x, scale).long()
+        C = labels.max() + 1
 
-            # We append a "1" to the input vectors, in order to
-            # compute both the numerator and denominator of the "average"
-            #  fraction in one pass through the data.
-            x_1 = torch.cat((x, torch.ones_like(x[:, :1])), dim=1)
-            D = x_1.shape[1]
-            points = torch.zeros_like(x_1[:C])
-            points.scatter_add_(0, labels[:, None].repeat(1, D), x_1)
-            return (points[:, :-1] / points[:, -1:]).contiguous()
+        # We append a "1" to the input vectors, in order to
+        # compute both the numerator and denominator of the "average"
+        #  fraction in one pass through the data.
+        x_1 = torch.cat((x, torch.ones_like(x[:, :1])), dim=1)
+        D = x_1.shape[1]
+        points = torch.zeros_like(x_1[:C])
+        points.scatter_add_(0, labels[:, None].repeat(1, D), x_1)
+        return (points[:, :-1] / points[:, -1:]).contiguous()
 
-        else:  # Older implementation;
-            points = scatter(points * weights[:, None], labels, dim=0)
-            weights = scatter(weights, labels, dim=0)
-            points = points / weights[:, None]
-
-    else:  # We process proteins using a for loop.
-        # This is probably sub-optimal, but I don't really know
-        # how to do more elegantly (this type of computation is
-        # not super well supported by PyTorch).
-        batch_size = torch.max(batch).item() + 1  # Typically, =32
-        points, batches = [], []
-        for b in range(batch_size):
-            p = subsample(x[batch == b], scale=scale)
-            points.append(p)
-            batches.append(b * torch.ones_like(batch[: len(p)]))
+    # We process proteins using a for loop.
+    # This is probably sub-optimal, but I don't really know
+    # how to do more elegantly (this type of computation is
+    # not super well supported by PyTorch).
+    batch_size = torch.max(batch).item() + 1  # Typically, =32
+    points, batches = [], []
+    for b in range(batch_size):
+        p = subsample(x[batch == b], scale=scale)
+        points.append(p)
+        batches.append(b * torch.ones_like(batch[: len(p)]))
 
     return torch.cat(points, dim=0), torch.cat(batches, dim=0)
 
 
-def soft_distances(x, y, batch_x, batch_y, smoothness=0.01, atomtypes=None):
+def soft_distances(
+    x: Tensor,
+    y: Tensor,
+    batch_x=None,
+    batch_y=None,
+    smoothness: float = 0.01,
+    atomtypes=None,
+) -> Tensor:
     """Computes a soft distance function to the atom centers of a protein.
 
     Implements Eq. (1) of the paper in a fast and numerically stable way.
@@ -155,19 +153,19 @@ def soft_distances(x, y, batch_x, batch_y, smoothness=0.01, atomtypes=None):
     D_ij = ((x_i - y_j) ** 2).sum(-1)  # (N, M, 1) squared distances
 
     # Use a block-diagonal sparsity mask to support heterogeneous batch processing:
-    D_ij.ranges = diagonal_ranges(batch_x, batch_y)
+    # D_ij.ranges = diagonal_ranges(batch_x, batch_y)
 
     if atomtypes is not None:
         # Turn the one-hot encoding "atomtypes" into a vector of diameters "smoothness_i":
         # (N, 6)  -> (N, 1, 1)  (There are 6 atom types)
-        atomic_radii = torch.cuda.FloatTensor(
-            [170, 110, 152, 155, 180, 190], device=x.device
+        atomic_radii = torch.tensor(
+            [170, 110, 152, 155, 180, 190], dtype=torch.float32, device=x.device
         )
         atomic_radii = atomic_radii / atomic_radii.min()
         atomtype_radii = atomtypes * atomic_radii[None, :]  # n_atoms, n_atomtypes
         # smoothness = atomtypes @ atomic_radii  # (N, 6) @ (6,) = (N,)
         smoothness = torch.sum(
-            smoothness * atomtype_radii, dim=1, keepdim=False
+            smoothness * atomtype_radii, dim=1, keepdim=False, dtype=torch.float32
         )  # n_atoms, 1
         smoothness_i = LazyTensor(smoothness[:, None, None])
 
@@ -201,13 +199,13 @@ def soft_distances(x, y, batch_x, batch_y, smoothness=0.01, atomtypes=None):
 def atoms_to_points_normals(
     atoms,
     batch,
-    distance=1.05,
-    smoothness=0.5,
-    resolution=1.0,
-    nits=4,
-    atomtypes=None,
-    sup_sampling=20,
-    variance=0.1,
+    distance: float = 1.05,
+    smoothness: float = 0.5,
+    resolution: float = 1.0,
+    nits: int = 4,
+    atomtypes: Optional[Tensor] = None,
+    sup_sampling: int = 20,
+    variance: float = 0.1,
 ):
     """Turns a collection of atoms into an oriented point cloud.
 
@@ -375,7 +373,7 @@ def mesh_normals_areas(vertices, triangles=None, scale=[1.0], batch=None, normal
         V = (B - A).cross(C - A)  # (N, 3)
 
         # Vertice areas:
-        S = (V ** 2).sum(-1).sqrt() / 6  # (N,) 1/3 of a triangle area
+        S = (V**2).sum(-1).sqrt() / 6  # (N,) 1/3 of a triangle area
         areas = torch.zeros(len(vertices)).type_as(vertices)  # (N,)
         areas.scatter_add_(0, triangles[0, :], S)  # Aggregate from "A's"
         areas.scatter_add_(0, triangles[1, :], S)  # Aggregate from "B's"
@@ -393,7 +391,7 @@ def mesh_normals_areas(vertices, triangles=None, scale=[1.0], batch=None, normal
     s = LazyTensor(scales[None, None, :])  # (1, 1, S)
 
     D_ij = ((x_i - y_j) ** 2).sum(-1)  #  (N, M, 1)
-    K_ij = (-D_ij / (2 * s ** 2)).exp()  # (N, M, S)
+    K_ij = (-D_ij / (2 * s**2)).exp()  # (N, M, S)
 
     # Support for heterogeneous batch processing:
     if batch is not None:
@@ -515,7 +513,7 @@ def curvatures(
         # Pseudo-geodesic squared distance:
         d2_ij = ((x_j - x_i) ** 2).sum(-1) * ((2 - (n_i | n_j)) ** 2)  # (N, N, 1)
         # Gaussian window:
-        window_ij = (-d2_ij / (2 * (scale ** 2))).exp()  # (N, N, 1)
+        window_ij = (-d2_ij / (2 * (scale**2))).exp()  # (N, N, 1)
 
         # Project on the tangent plane:
         P_ij = uv_i.matvecmult(x_j - x_i)  # (N, N, 2)
@@ -541,7 +539,7 @@ def curvatures(
 
         # (minus) Shape operator, i.e. the differential of the Gauss map:
         # = (PPt^-1 @ PQt) : simple estimation through linear regression
-        S = torch.solve(PQt, PPt).solution
+        S = torch.linalg.solve(PPt, PQt)
         a, b, c, d = S[:, 0, 0], S[:, 0, 1], S[:, 1, 0], S[:, 1, 1]  # (N,)
 
         # Normalization
@@ -557,8 +555,9 @@ def curvatures(
 class ContiguousBackward(torch.autograd.Function):
     """
     Function to ensure contiguous gradient in backward pass. To be applied after PyKeOps reduction.
-    N.B.: This workaround fixes a bug that will be fixed in ulterior KeOp releases. 
+    N.B.: This workaround fixes a bug that will be fixed in ulterior KeOp releases.
     """
+
     @staticmethod
     def forward(ctx, input):
         return input
@@ -566,6 +565,7 @@ class ContiguousBackward(torch.autograd.Function):
     @staticmethod
     def backward(ctx, grad_output):
         return grad_output.contiguous()
+
 
 class dMaSIFConv(nn.Module):
     def __init__(
@@ -637,11 +637,12 @@ class dMaSIFConv(nn.Module):
             self.heads_dim = self.Hidden
 
         if self.Hidden % self.heads_dim != 0:
-            raise ValueError(f"The dimension of the hidden units ({self.Hidden})"\
-                    + f"should be a multiple of the heads dimension ({self.heads_dim}).")
+            raise ValueError(
+                f"The dimension of the hidden units ({self.Hidden})"
+                + f"should be a multiple of the heads dimension ({self.heads_dim})."
+            )
         else:
             self.n_heads = self.Hidden // self.heads_dim
-
 
         # Transformation of the input features:
         self.net_in = nn.Sequential(
@@ -695,7 +696,6 @@ class dMaSIFConv(nn.Module):
                 )
                 nn.init.normal_(self.conv[2].bias)
                 self.conv[2].bias *= 0.5 * (self.conv[2].weight ** 2).sum(-1).sqrt()
-
 
     def forward(self, points, nuv, features, ranges=None):
         """Performs a quasi-geodesic interaction step.
@@ -755,11 +755,12 @@ class dMaSIFConv(nn.Module):
         # as self.n_heads reduction over vectors of length self.heads_dim (= "Hd" in the comments).
         head_out_features = []
         for head in range(self.n_heads):
-
             # Extract a slice of width Hd from the feature array
             head_start = head * self.heads_dim
             head_end = head_start + self.heads_dim
-            head_features = features[:, head_start:head_end].contiguous()  # (N, H) -> (N, Hd)
+            head_features = features[
+                :, head_start:head_end
+            ].contiguous()  # (N, H) -> (N, Hd)
 
             # Features:
             f_j = LazyTensor(head_features[None, :, :])  # (1, N, Hd)
@@ -767,9 +768,9 @@ class dMaSIFConv(nn.Module):
             # Convolution parameters:
             if self.cheap:
                 # Extract a slice of Hd lines: (H, 3) -> (Hd, 3)
-                A = self.conv[0].weight[head_start:head_end, :].contiguous()  
+                A = self.conv[0].weight[head_start:head_end, :].contiguous()
                 # Extract a slice of Hd coefficients: (H,) -> (Hd,)
-                B = self.conv[0].bias[head_start:head_end].contiguous() 
+                B = self.conv[0].bias[head_start:head_end].contiguous()
                 AB = torch.cat((A, B[:, None]), dim=1)  # (Hd, 4)
                 ab = LazyTensor(AB.view(1, 1, -1))  # (1, 1, Hd*4)
             else:
@@ -808,9 +809,11 @@ class dMaSIFConv(nn.Module):
             F_ij = window_ij * X_ij * f_j  # (N, N, Hd)
             F_ij.ranges = ranges  # Support for batches and/or block-sparsity
 
-            head_out_features.append(ContiguousBackward().apply(F_ij.sum(dim=1)))  # (N, Hd)
+            head_out_features.append(
+                ContiguousBackward().apply(F_ij.sum(dim=1))
+            )  # (N, Hd)
 
-        # Concatenate the result of our n_heads "attention heads":
+        # Concatenate the result of our n_heads "attention heads":
         features = torch.cat(head_out_features, dim=1)  # n_heads * (N, Hd) -> (N, H)
 
         # 3. Transform the output features: ------------------------------------
