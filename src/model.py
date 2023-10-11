@@ -4,11 +4,12 @@ import torch
 from torch import Tensor, nn
 
 from benchmark_models import DGCNN_seg, PointNet2_seg, dMaSIFConv_seg
-from data import Mode
-from features import AtomNetMP, FeatureExtractor
+from enums import Mode
+from atomnet import AtomNetMP
 from helper import soft_dimension
 from load_config import ModelCfg
 from protein import Protein
+from geometry_processing import curvatures
 
 
 def combine_pair(
@@ -70,23 +71,53 @@ def split_pair(p1p2):
 class BaseModel(nn.Module):
     def __init__(
         self,
-        feature_extractor: FeatureExtractor,
         embedding_model: nn.Module,
         atom_dims: int,
         dropout: float,
+        curvature_scales: list[float],
+        no_chem: bool,
+        no_geom: bool,
     ):
         super().__init__()
 
         self.atomnet = AtomNetMP(atom_dims)
-        self.feature_extractor = feature_extractor
         self.embedding_model = embedding_model
         self.dropout = nn.Dropout(dropout)
+        self.curvature_scales = curvature_scales
+        self.no_chem = no_chem
+        self.no_geom = no_geom
+
+    def features(
+        self,
+        xyz: Tensor,
+        normals: Tensor,
+        atom_xyz: Tensor,
+        atom_types: Tensor,
+    ) -> Tensor:
+        """Estimates geometric and chemical features from a protein surface or a cloud of atoms."""
+
+        # Estimate the curvatures using the triangles or the estimated normals:
+        protein_curvatures = curvatures(
+            xyz,
+            normals=normals,
+            scales=self.curvature_scales,
+        )
+
+        # Compute chemical features on-the-fly:
+        chem_feats = self.atomnet(xyz, atom_xyz, atom_types)
+
+        if self.no_chem:
+            chem_feats = 0.0 * chem_feats
+        if self.no_geom:
+            protein_curvatures = 0.0 * protein_curvatures
+
+        # Concatenate our features:
+        return torch.cat([protein_curvatures, chem_feats], dim=1).contiguous()
 
     def embed(self, protein: Protein) -> tuple[float, float]:
         """Embeds all points of a protein in a high-dimensional vector space."""
         input_features = self.dropout(
-            self.feature_extractor.features(
-                self.atomnet,
+            self.features(
                 protein.surface_xyz,
                 protein.surface_normals,
                 protein.atom_coords,
@@ -348,3 +379,13 @@ EMBEDDING_MODELS = {
         "PointNet": PointNetSiteEmbed,
     },
 }
+
+
+def load_model(mode: Mode, cfg: ModelCfg, model_type: str = "dMaSIF") -> BaseModel:
+    """
+    Choose the correct type of model depending on the desired mode
+    and instantiate it from a ModelConfig
+    """
+    embedding_model = EMBEDDING_MODELS[mode][model_type].from_config(cfg)
+    model = MODELS[mode].from_config(embedding_model, cfg)
+    return model

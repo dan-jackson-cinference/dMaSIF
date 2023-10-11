@@ -5,7 +5,6 @@ from torch_geometric.loader import DataLoader
 
 from data import Mode
 from data_iteration import iterate
-from features import FeatureExtractor
 from load_config import TrainingCfg
 from model import BaseModel
 

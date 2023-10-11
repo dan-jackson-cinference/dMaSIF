@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import torch
 from pykeops.torch import LazyTensor
 from torch import Tensor, nn
@@ -205,54 +203,3 @@ class AtomEmbedding(nn.Module):
         fx = self.conv3(fx)
 
         return fx
-
-
-@dataclass
-class FeatureExtractor:
-    resolution: float
-    sup_sampling: int
-    distance: float
-    no_chem: bool
-    no_geom: bool
-    curvature_scales: list[float]
-    single_protein: bool
-
-    @classmethod
-    def from_config(cls, cfg: FeatureCfg, single_protein: bool) -> FeatureExtractor:
-        return cls(
-            cfg.resolution,
-            cfg.sup_sampling,
-            cfg.distance,
-            cfg.no_chem,
-            cfg.no_geom,
-            cfg.curvature_scales,
-            single_protein,
-        )
-
-    def features(
-        self,
-        atomnet: nn.Module,
-        xyz: Tensor,
-        normals: Tensor,
-        atom_xyz: Tensor,
-        atom_types: Tensor,
-    ) -> Tensor:
-        """Estimates geometric and chemical features from a protein surface or a cloud of atoms."""
-
-        # Estimate the curvatures using the triangles or the estimated normals:
-        protein_curvatures = curvatures(
-            xyz,
-            normals=normals,
-            scales=self.curvature_scales,
-        )
-
-        # Compute chemical features on-the-fly:
-        chem_feats = atomnet(xyz, atom_xyz, atom_types)
-
-        if self.no_chem:
-            chem_feats = 0.0 * chem_feats
-        if self.no_geom:
-            protein_curvatures = 0.0 * protein_curvatures
-
-        # Concatenate our features:
-        return torch.cat([protein_curvatures, chem_feats], dim=1).contiguous()

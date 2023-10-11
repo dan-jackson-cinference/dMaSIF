@@ -1,0 +1,4 @@
+defaults:
+  - base_search_model
+
+emb_dims: 16

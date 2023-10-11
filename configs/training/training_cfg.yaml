@@ -1,0 +1,9 @@
+defaults:
+  - base_training
+  
+n_epochs: 50
+batch_size: 1
+optimizer: Adam
+lr: 0.0001
+lr_scheduler: None
+restart_training: ""

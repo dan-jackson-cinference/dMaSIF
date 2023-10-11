@@ -5,8 +5,8 @@ from torch_geometric.loader import DataLoader
 
 from data import Mode
 from data_iteration import iterate
-from features import FeatureExtractor
-from src.model import BaseModel
+from atomnet import FeatureExtractor
+from model import BaseModel
 
 
 def inference(

@@ -2,12 +2,12 @@ from typing import Optional
 
 import torch
 from lightning.pytorch import LightningModule, Trainer
+from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from sklearn.metrics import roc_auc_score
 from torch import Tensor, optim
 from torch_geometric.data import Batch
 
-from data import Mode, Protein
-from features import FeatureExtractor
+from data import Protein
 from loss import compute_site_loss
 from model import BaseModel
 
@@ -48,7 +48,6 @@ class dMaSIFTrainer(LightningModule):
     def __init__(
         self,
         model: BaseModel,
-        mode: Mode,
         random_rotation: bool,
         learning_rate: float,
         save_path: Optional[str] = None,
@@ -56,7 +55,6 @@ class dMaSIFTrainer(LightningModule):
         super().__init__()
         self.model = model
         self.save_path = save_path
-        self.mode = mode
         self.learning_rate = learning_rate
         self.random_rotation = random_rotation
 
@@ -100,3 +98,13 @@ class dMaSIFTrainer(LightningModule):
         if not torch.isnan(loss):
             roc_auc = roc_auc_score(numpy(protein.surface_labels), numpy(preds))
         return roc_auc
+
+
+def train(model: BaseModel, train_dataloader: DataLoader, val_dataloader: DataLoader):
+    dmasif_model = dMaSIFTrainer(model)
+    trainer = Trainer(
+        callbacks=[EarlyStopping(monitor="loss/val", mode="min", patience=5)]
+    )
+    trainer.fit(
+        dmasif_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader
+    )

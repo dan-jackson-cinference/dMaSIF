@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import tarfile
-from enum import Enum
+
 from pathlib import Path
 from typing import Optional
 
@@ -15,7 +15,7 @@ from torch_geometric.transforms import Compose
 
 from data_preprocessing.convert_pdb2npy import convert_pdbs
 from data_preprocessing.convert_ply2npy import convert_plys
-from features import FeatureExtractor
+from enums import Mode
 from geometry_processing import atoms_to_points_normals
 from protein import Protein
 from transforms import CenterPairAtoms, NormalizeChemFeatures, RandomRotationPairAtoms
@@ -84,11 +84,6 @@ def load_protein_pair(
         protein_2.compute_surface_features(resolution, sup_sampling, distance)
 
     return PairData(protein_1, protein_2)
-
-
-class Mode(Enum):
-    SITE = "site"
-    SEARCH = "search"
 
 
 FILES = {
