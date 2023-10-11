@@ -5,7 +5,8 @@ import tarfile
 import numpy as np
 from protein import Protein
 import csv
-from data_preprocessing import convert_pdb2npy, convert_ply2npy
+from data_preprocessing.convert_pdb2npy import convert_pdbs
+from data_preprocessing.convert_ply2npy import convert_plys
 
 
 def download(url: str, target_dir: str):
