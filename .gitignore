@@ -19,3 +19,4 @@ data_analysis/.ipynb_checkpoints/
 surface_data/
 outputs/
 __pycache__/
+lightning_logs/

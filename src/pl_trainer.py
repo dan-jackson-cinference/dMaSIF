@@ -6,8 +6,10 @@ from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from sklearn.metrics import roc_auc_score
 from torch import Tensor, optim
 from torch_geometric.data import Batch
+from torch_geometric.loader import DataLoader
 
 from data import Protein
+from load_configs import TrainingConfig
 from loss import compute_site_loss
 from model import BaseModel
 
@@ -48,7 +50,6 @@ class dMaSIFTrainer(LightningModule):
     def __init__(
         self,
         model: BaseModel,
-        random_rotation: bool,
         learning_rate: float,
         save_path: Optional[str] = None,
     ):
@@ -56,7 +57,6 @@ class dMaSIFTrainer(LightningModule):
         self.model = model
         self.save_path = save_path
         self.learning_rate = learning_rate
-        self.random_rotation = random_rotation
 
     @classmethod
     def from_config(cls, cfg):
@@ -72,6 +72,7 @@ class dMaSIFTrainer(LightningModule):
         return interface_preds
 
     def training_step(self, batch: Batch, batch_idx):
+        print(batch)
         for protein in batch.protein_1:
             preds = self.forwards(protein)
             loss = compute_site_loss(preds, protein.surface_labels)
@@ -84,6 +85,7 @@ class dMaSIFTrainer(LightningModule):
 
     def validation_step(self, batch: Batch, batch_idx):
         for protein in batch.protein_1:
+            print(protein.xyz)
             preds = self.forwards(protein)
             loss = compute_site_loss(preds, protein.surface_labels)
         if not torch.isnan(loss):
@@ -100,10 +102,20 @@ class dMaSIFTrainer(LightningModule):
         return roc_auc
 
 
-def train(model: BaseModel, train_dataloader: DataLoader, val_dataloader: DataLoader):
-    dmasif_model = dMaSIFTrainer(model)
+def train(
+    model: BaseModel,
+    train_cfg: TrainingConfig,
+    train_dataloader: DataLoader,
+    val_dataloader: DataLoader,
+    checkpoint: str,
+):
+    dmasif_model = dMaSIFTrainer(model, train_cfg.lr, checkpoint)
     trainer = Trainer(
-        callbacks=[EarlyStopping(monitor="loss/val", mode="min", patience=5)]
+        accelerator="auto",
+        devices="auto",
+        strategy="auto",
+        max_epochs=50,
+        callbacks=[EarlyStopping(monitor="loss/val", mode="min", patience=5)],
     )
     trainer.fit(
         dmasif_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader

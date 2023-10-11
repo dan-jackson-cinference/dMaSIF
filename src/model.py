@@ -3,13 +3,13 @@ from __future__ import annotations
 import torch
 from torch import Tensor, nn
 
+from atomnet import AtomNetMP
 from benchmark_models import DGCNN_seg, PointNet2_seg, dMaSIFConv_seg
 from enums import Mode
-from atomnet import AtomNetMP
-from helper import soft_dimension
-from load_config import ModelCfg
-from protein import Protein
 from geometry_processing import curvatures
+from helper import soft_dimension
+from load_configs import ModelConfig, SearchModelConfig, SiteModelConfig
+from protein import Protein
 
 
 def combine_pair(
@@ -135,14 +135,18 @@ class SiteModel(BaseModel):
 
     def __init__(
         self,
-        feature_extractor: FeatureExtractor,
         embedding_model: nn.Module,
         atom_dims: int,
         dropout: float,
+        curvature_scales: list[float],
+        no_chem: bool,
+        no_geom: bool,
         emb_dims: int,
         post_units: int,
     ):
-        super().__init__(feature_extractor, embedding_model, atom_dims, dropout)
+        super().__init__(
+            embedding_model, atom_dims, dropout, curvature_scales, no_chem, no_geom
+        )
 
         self.net_out = nn.Sequential(
             nn.Linear(emb_dims, post_units),
@@ -155,16 +159,17 @@ class SiteModel(BaseModel):
     @classmethod
     def from_config(
         cls,
-        feature_extractor: FeatureExtractor,
         embedding_model: nn.Module,
-        cfg: ModelCfg,
+        cfg: SiteModelConfig,
     ) -> SiteModel:
         """Instantiate a SiteModel object from a config"""
         return cls(
-            feature_extractor,
             embedding_model,
             cfg.atom_dims,
             cfg.dropout,
+            cfg.curvature_scales,
+            cfg.no_chem,
+            cfg.no_geom,
             cfg.emb_dims,
             cfg.post_units,
         )
@@ -174,7 +179,6 @@ class SiteModel(BaseModel):
         protein: Protein,
     ) -> tuple[Tensor, float, float]:
         """Compute embeddings of the point clouds"""
-
         input_features, output_embedding = self.embed(protein)
 
         # Monitor the approximate rank of our representations:
@@ -189,16 +193,17 @@ class SearchModel(BaseModel):
     @classmethod
     def from_config(
         cls,
-        feature_extractor: FeatureExtractor,
         embedding_model: nn.Module,
-        cfg: ModelCfg,
+        cfg: SearchModelConfig,
     ) -> SearchModel:
         """Load a SearchModel from a config"""
         return cls(
-            feature_extractor,
             embedding_model,
             cfg.atom_dims,
             cfg.dropout,
+            cfg.curvature_scales,
+            cfg.no_chem,
+            cfg.no_geom,
         )
 
     def forward(
@@ -260,7 +265,7 @@ class dMaSIFSiteEmbed(nn.Module):
         )
 
     @classmethod
-    def from_config(cls, cfg: ModelCfg):
+    def from_config(cls, cfg: SiteModelConfig):
         "Create an instance of the DMasifSiteEmbed model from a config object"
         return cls(
             cfg.in_channels,
@@ -321,7 +326,7 @@ class DGCNNSiteEmbed(nn.Module):
         self.conv = DGCNN_seg(in_channels + 3, emb_dims, n_layers, knn)
 
     @classmethod
-    def from_config(cls, cfg: ModelCfg):
+    def from_config(cls, cfg: SiteModelConfig):
         return cls(cfg.in_channels, cfg.emb_dims, cfg.n_layers, cfg.knn)
 
     def forward(self, P: dict[str, Tensor | None], features):
@@ -344,7 +349,7 @@ class PointNetSiteEmbed(nn.Module):
         self.conv = PointNet2_seg(in_channels, emb_dims, radius, n_layers)
 
     @classmethod
-    def from_config(cls, cfg: ModelCfg):
+    def from_config(cls, cfg: SiteModelConfig):
         return cls(
             cfg.in_channels,
             cfg.emb_dims,
@@ -381,7 +386,7 @@ EMBEDDING_MODELS = {
 }
 
 
-def load_model(mode: Mode, cfg: ModelCfg, model_type: str = "dMaSIF") -> BaseModel:
+def load_model(mode: Mode, cfg: ModelConfig, model_type: str = "dMaSIF") -> BaseModel:
     """
     Choose the correct type of model depending on the desired mode
     and instantiate it from a ModelConfig

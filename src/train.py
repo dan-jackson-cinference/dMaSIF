@@ -5,12 +5,12 @@ from torch_geometric.loader import DataLoader
 
 from data import Mode
 from data_iteration import iterate
-from load_config import TrainingCfg
+from load_configs import TrainingConfig
 from model import BaseModel
 
 
 def train(
-    cfg: TrainingCfg,
+    cfg: TrainingConfig,
     model: BaseModel,
     dataloaders: dict[str, DataLoader],
     random_rotation: bool,

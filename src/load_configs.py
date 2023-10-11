@@ -1,13 +1,15 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional
 
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING
 
+from enums import Mode
+
 
 @dataclass
 class ModelConfig:
-    mode: str = MISSING
+    mode: Mode = MISSING
     atom_dims: int = 6
     in_channels: int = 16
     orientation_units: int = 16
@@ -15,18 +17,24 @@ class ModelConfig:
     radius: float = 9.0
     knn: int = 40
     dropout: float = 0.1
+    curvature_scales: list[float] = field(
+        default_factory=lambda: [1.0, 2.0, 3.0, 5.0, 10.0]
+    )
+    no_chem: bool = False
+    no_geom: bool = False
+    emb_dims: int = MISSING
 
 
 @dataclass
 class SiteModelConfig(ModelConfig):
-    mode: str = "site"
+    mode: Mode = Mode.SITE
     emb_dims: int = 8
     post_units: int = 8
 
 
 @dataclass
 class SearchModelConfig(ModelConfig):
-    mode: str = "search"
+    mode: Mode = Mode.SEARCH
     emb_dims: int = 16
 
 
@@ -51,6 +59,7 @@ class TrainingConfig:
 
 @dataclass
 class Config:
+    seed: int = 42
     model: ModelConfig = MISSING
     training: TrainingConfig = MISSING
     data: DataConfig = MISSING

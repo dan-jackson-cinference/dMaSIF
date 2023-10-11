@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import tarfile
-
 from pathlib import Path
 from typing import Optional
 
@@ -16,7 +15,7 @@ from torch_geometric.transforms import Compose
 from data_preprocessing.convert_pdb2npy import convert_pdbs
 from data_preprocessing.convert_ply2npy import convert_plys
 from enums import Mode
-from geometry_processing import atoms_to_points_normals
+from load_configs import DataConfig
 from protein import Protein
 from transforms import CenterPairAtoms, NormalizeChemFeatures, RandomRotationPairAtoms
 
@@ -321,17 +320,10 @@ def load_test_data(
     return test_loader
 
 
-def load_training_data(
-    resolution: float,
-    sup_sampling: int,
-    distance: float,
-    random_rotation: bool,
-    mode: Mode,
-    validation_fraction: float,
-) -> dict[str, DataLoader]:
+def load_training_data(mode: Mode, cfg: DataConfig) -> dict[str, DataLoader]:
     transformations = (
         Compose([NormalizeChemFeatures(), CenterPairAtoms(), RandomRotationPairAtoms()])
-        if random_rotation
+        if cfg.random_rotation
         else Compose([NormalizeChemFeatures()])
     )
 
@@ -343,9 +335,9 @@ def load_training_data(
     # Load the train dataset:
     train_dataset = ProteinPairsSurfaces(
         "surface_data",
-        resolution,
-        sup_sampling,
-        distance,
+        cfg.resolution,
+        cfg.sup_sampling,
+        cfg.distance,
         mode=mode,
         precompute_surface_features=True,
         train=True,
@@ -355,7 +347,7 @@ def load_training_data(
 
     # # Train/Validation split:
     train_nsamples = len(train_dataset)
-    val_nsamples = int(train_nsamples * validation_fraction)
+    val_nsamples = int(train_nsamples * cfg.validation_fraction)
     train_nsamples = train_nsamples - val_nsamples
     train_dataset, val_dataset = random_split(
         train_dataset, [train_nsamples, val_nsamples]

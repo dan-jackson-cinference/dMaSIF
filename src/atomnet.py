@@ -3,13 +3,6 @@ from __future__ import annotations
 import torch
 from pykeops.torch import LazyTensor
 from torch import Tensor, nn
-from torch_geometric.data import Batch
-from torch_geometric.loader import DataLoader
-from tqdm import tqdm
-
-from geometry_processing import atoms_to_points_normals, curvatures
-from helper import diagonal_ranges
-from load_config import FeatureCfg
 
 
 def knn_atoms(x, y, k):
@@ -166,6 +159,7 @@ class AtomNetMP(nn.Module):
         self.atom_atom = AtomAtomEmbeddingMP(atom_dims)
 
     def forward(self, xyz: Tensor, atom_xyz: Tensor, atom_types: Tensor):
+        print(atom_types)
         # Run a DGCNN on the available information:
         atom_types = self.transform_types(atom_types)
         atom_types = self.atom_atom(atom_xyz, atom_xyz, atom_types)
