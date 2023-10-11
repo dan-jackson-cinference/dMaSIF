@@ -30,7 +30,6 @@ def create_checkpoint(
 def main(cfg: Config):
     mode = cfg.model.mode
     set_seed(cfg.seed)
-    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     checkpoint = create_checkpoint(mode, cfg.model, cfg.training)
 
     model = load_model(mode, cfg.model)
