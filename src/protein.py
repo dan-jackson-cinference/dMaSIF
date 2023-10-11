@@ -32,14 +32,20 @@ class Protein:
 
     @classmethod
     def from_numpy(
-        cls, pdb_id: str, data_dir: Path, center: bool = False, single_pdb: bool = False
+        cls,
+        pdb_id: str,
+        chains: str,
+        data_dir: Path,
+        center: bool = False,
+        single_pdb: bool = False,
     ) -> Protein:
         """Loads a protein surface mesh and its features"""
         # Load the data, and read the connectivity information:
+        pdb_file = f"{pdb_id}_{chains}"
         triangles = (
             None
             if single_pdb
-            else torch.from_numpy(np.load(data_dir / (pdb_id + "_triangles.npy")))
+            else torch.from_numpy(np.load(data_dir / (pdb_file + "_triangles.npy")))
             .type(torch.float32)
             .T
         )
@@ -47,7 +53,7 @@ class Protein:
         point_cloud = (
             None
             if single_pdb
-            else torch.from_numpy(np.load(data_dir / (pdb_id + "_xyz.npy"))).type(
+            else torch.from_numpy(np.load(data_dir / (pdb_file + "_xyz.npy"))).type(
                 torch.float32
             )
         )
@@ -58,10 +64,10 @@ class Protein:
         )
 
         atom_coords = torch.from_numpy(
-            np.load(data_dir / (pdb_id + "_atomxyz.npy"))
+            np.load(data_dir / (pdb_file + "_atomxyz.npy"))
         ).type(torch.float32)
         atom_types = torch.from_numpy(
-            np.load(data_dir / (pdb_id + "_atomtypes.npy"))
+            np.load(data_dir / (pdb_file + "_atomtypes.npy"))
         ).type(torch.float32)
 
         if center:
@@ -73,7 +79,7 @@ class Protein:
             None
             if single_pdb
             else torch.from_numpy(
-                np.load(data_dir / (pdb_id + "_iface_labels.npy")).reshape((-1, 1))
+                np.load(data_dir / (pdb_file + "_iface_labels.npy")).reshape((-1, 1))
             ).type(torch.float32)
         )
 
@@ -81,16 +87,16 @@ class Protein:
         chemical_features = (
             None
             if single_pdb
-            else torch.from_numpy(np.load(data_dir / (pdb_id + "_features.npy"))).type(
-                torch.float32
-            )
+            else torch.from_numpy(
+                np.load(data_dir / (pdb_file + "_features.npy"))
+            ).type(torch.float32)
         )
 
         # Normals
         normals = (
             None
             if single_pdb
-            else torch.from_numpy(np.load(data_dir / (pdb_id + "_normals.npy"))).type(
+            else torch.from_numpy(np.load(data_dir / (pdb_file + "_normals.npy"))).type(
                 torch.float32
             )
         )

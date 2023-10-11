@@ -32,7 +32,7 @@ def load_structure_np(fname, center):
     return {"xyz": coords, "types": types_array}
 
 
-def convert_pdbs(pdb_dir, npy_dir):
+def convert_pdbs(pdb_dir: Path, npy_dir: Path):
     print("Converting PDBs")
     for p in tqdm(pdb_dir.glob("*.pdb")):
         protein = load_structure_np(p, center=False)

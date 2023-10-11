@@ -159,8 +159,6 @@ class AtomNetMP(nn.Module):
         self.atom_atom = AtomAtomEmbeddingMP(atom_dims)
 
     def forward(self, xyz: Tensor, atom_xyz: Tensor, atom_types: Tensor):
-        print(atom_types)
-        # Run a DGCNN on the available information:
         atom_types = self.transform_types(atom_types)
         atom_types = self.atom_atom(atom_xyz, atom_xyz, atom_types)
         atom_types = self.embed(xyz, atom_xyz, atom_types)
