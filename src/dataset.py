@@ -33,8 +33,14 @@ def create_datasets(
 
 
 def collate_proteins(data: list[Protein]):
-    print(data)
-    exit()
+    protein = data[0]
+    return (
+        protein.surface_xyz,
+        protein.surface_normals,
+        protein.atom_coords,
+        protein.atom_coords,
+        protein.surface_labels,
+    )
 
 
 def create_dataloader(dataset: ProteinDataset, batch_size: int, split: str):

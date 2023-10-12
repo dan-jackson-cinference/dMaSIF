@@ -46,7 +46,7 @@ def main(cfg: Config):
         }
 
         model = pl_train(
-            model, cfg.training, dataloaders["train"], dataloaders["val"], checkpoint
+            model, cfg.training, dataloaders["train"], dataloaders["val"], checkpoint  # type: ignore
         )
     else:
         pass

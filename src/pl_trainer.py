@@ -58,47 +58,49 @@ class dMaSIFTrainer(LightningModule):
         self.save_path = save_path
         self.learning_rate = learning_rate
 
-    @classmethod
-    def from_config(cls, cfg):
-        pass
-
     def configure_optimizers(self):
         return optim.Adam(self.model.parameters(), lr=self.learning_rate, amsgrad=True)
 
-    def forwards(self, protein: Protein):
+    def forwards(
+        self,
+        surface_xyz: Tensor,
+        surface_normals: Tensor,
+        atom_coords: Tensor,
+        atom_types: Tensor,
+    ):
         """Run a forwards pass through the network for a single protein"""
-        interface_preds, input_r_value, conv_r_value = self.model(protein)
+        interface_preds, input_r_value, conv_r_value = self.model(
+            surface_xyz, surface_normals, atom_coords, atom_types
+        )
 
         return interface_preds
 
     def training_step(self, batch: Batch, batch_idx):
-        print(batch)
-        for protein in batch.protein_1:
-            preds = self.forwards(protein)
-            loss = compute_site_loss(preds, protein.surface_labels)
-            if torch.isnan(loss):
-                return None
-            roc_auc = roc_auc_score(numpy(protein.surface_labels), numpy(preds))
+        surface_xyz, surface_normals, atom_coords, atom_types, surface_labels = batch
+        preds = self.forwards(surface_xyz, surface_normals, atom_coords, atom_types)
+        loss = compute_site_loss(preds, surface_labels)
+        if torch.isnan(loss):
+            return None
+        roc_auc = roc_auc_score(numpy(surface_labels), numpy(preds))
         self.log("loss/train", loss, prog_bar=True)
         self.log("ROC_AUC/train", roc_auc)
         return loss
 
     def validation_step(self, batch: Batch, batch_idx):
-        for protein in batch.protein_1:
-            print(protein.xyz)
-            preds = self.forwards(protein)
-            loss = compute_site_loss(preds, protein.surface_labels)
+        surface_xyz, surface_normals, atom_coords, atom_types, surface_labels = batch
+        preds = self.forwards(surface_xyz, surface_normals, atom_coords, atom_types)
+        loss = compute_site_loss(preds, surface_labels)
         if not torch.isnan(loss):
-            roc_auc = roc_auc_score(numpy(protein.surface_labels), numpy(preds))
+            roc_auc = roc_auc_score(numpy(surface_labels), numpy(preds))
             self.log("loss/val", loss, prog_bar=True)
             self.log("ROC_AUC/val", roc_auc)
 
     def test_step(self, batch: Batch, batch_idx):
-        for protein in batch.protein_1:
-            preds = self.forwards(protein)
-            loss = compute_site_loss(preds, protein.surface_labels)
+        surface_xyz, surface_normals, atom_coords, atom_types, surface_labels = batch
+        preds = self.forwards(surface_xyz, surface_normals, atom_coords, atom_types)
+        loss = compute_site_loss(preds, surface_labels)
         if not torch.isnan(loss):
-            roc_auc = roc_auc_score(numpy(protein.surface_labels), numpy(preds))
+            roc_auc = roc_auc_score(numpy(surface_labels), numpy(preds))
         return roc_auc
 
 
