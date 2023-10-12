@@ -71,7 +71,7 @@ def split_pair(p1p2):
 class BaseModel(nn.Module):
     def __init__(
         self,
-        embedding_model: nn.Module,
+        embedding_model: dMaSIFSiteEmbed | dMaSIFSearchEmbed,
         atom_dims: int,
         dropout: float,
         curvature_scales: list[float],
@@ -89,22 +89,22 @@ class BaseModel(nn.Module):
 
     def features(
         self,
-        xyz: Tensor,
-        normals: Tensor,
-        atom_xyz: Tensor,
+        surface_xyz: Tensor,
+        surface_normals: Tensor,
+        atom_coords: Tensor,
         atom_types: Tensor,
     ) -> Tensor:
         """Estimates geometric and chemical features from a protein surface or a cloud of atoms."""
 
         # Estimate the curvatures using the triangles or the estimated normals:
         protein_curvatures = curvatures(
-            xyz,
-            normals=normals,
+            surface_xyz,
+            normals=surface_normals,
             scales=self.curvature_scales,
         )
 
         # Compute chemical features on-the-fly:
-        chem_feats = self.atomnet(xyz, atom_xyz, atom_types)
+        chem_feats = self.atomnet(surface_xyz, atom_coords, atom_types)
 
         if self.no_chem:
             chem_feats = 0.0 * chem_feats
@@ -114,18 +114,26 @@ class BaseModel(nn.Module):
         # Concatenate our features:
         return torch.cat([protein_curvatures, chem_feats], dim=1).contiguous()
 
-    def embed(self, protein: Protein) -> tuple[float, float]:
+    def forward(
+        self,
+        surface_xyz: Tensor,
+        surface_normals: Tensor,
+        atom_coords: Tensor,
+        atom_types: Tensor,
+    ) -> tuple[float, float]:
         """Embeds all points of a protein in a high-dimensional vector space."""
         input_features = self.dropout(
             self.features(
-                protein.surface_xyz,
-                protein.surface_normals,
-                protein.atom_coords,
-                protein.atom_types,
+                surface_xyz,
+                surface_normals,
+                atom_coords,
+                atom_types,
             )
         )
 
-        output_features = self.embedding_model(protein, input_features)
+        output_features = self.embedding_model(
+            surface_xyz, surface_normals, input_features
+        )
 
         return input_features, output_features
 
@@ -135,7 +143,7 @@ class SiteModel(BaseModel):
 
     def __init__(
         self,
-        embedding_model: nn.Module,
+        embedding_model: dMaSIFSiteEmbed,
         atom_dims: int,
         dropout: float,
         curvature_scales: list[float],
@@ -176,10 +184,15 @@ class SiteModel(BaseModel):
 
     def forward(
         self,
-        protein: Protein,
+        surface_xyz: Tensor,
+        surface_normals: Tensor,
+        atom_coords: Tensor,
+        atom_types: Tensor,
     ) -> tuple[Tensor, float, float]:
         """Compute embeddings of the point clouds"""
-        input_features, output_embedding = self.embed(protein)
+        input_features, output_embedding = super().forward(
+            surface_xyz, surface_normals, atom_coords, atom_types
+        )
 
         # Monitor the approximate rank of our representations:
         input_r_value = soft_dimension(input_features)
@@ -193,7 +206,7 @@ class SearchModel(BaseModel):
     @classmethod
     def from_config(
         cls,
-        embedding_model: nn.Module,
+        embedding_model: dMaSIFSearchEmbed,
         cfg: SearchModelConfig,
     ) -> SearchModel:
         """Load a SearchModel from a config"""
@@ -208,35 +221,34 @@ class SearchModel(BaseModel):
 
     def forward(
         self,
-        use_mesh: bool,
-        p1: dict[str, Tensor | None],
-        p2: None | dict[str, Tensor | None] = None,
+        surface_xyz_1: Tensor,
+        surface_normals_1: Tensor,
+        atom_coords_1: Tensor,
+        atom_types_1: Tensor,
+        surface_xyz_2: Tensor,
+        surface_normals_2: Tensor,
+        atom_coords_2: Tensor,
+        atom_types_2: Tensor,
     ):
         """Compute embeddings of the point clouds"""
-        if p2 is not None:
-            p1p2 = combine_pair(p1, p2)
-        else:
-            p1p2 = p1
+        features_1 = self.features(
+            surface_xyz_1, surface_normals_1, atom_coords_1, atom_types_1
+        )
+        features_1 = self.dropout(features_1)
+        features_2 = self.features(
+            surface_xyz_2, surface_normals_2, atom_coords_2, atom_types_2
+        )
+        features_2 = self.dropout(features_2)
 
-        conv_time, memory_usage = self.embed(p1p2, use_mesh)
+        output_embedding = self.embedding_model(
+            surface_xyz_1, surface_normals_1, surface_xyz_2, surface_normals_2
+        )
 
         # Monitor the approximate rank of our representations:
-        R_values = {}
-        R_values["input"] = soft_dimension(p1p2["input_features"])
-        R_values["conv"] = soft_dimension(p1p2["embedding_1"])
+        input_r_value = soft_dimension(input_features)
+        conv_r_value = soft_dimension(output_embedding)
 
-        if p2 is not None:
-            p1, p2 = split_pair(p1p2)
-        else:
-            p1 = p1p2
-
-        return {
-            "p1": p1,
-            "p2": p2,
-            "R_values": R_values,
-            "conv_time": conv_time,
-            "memory_usage": memory_usage,
-        }
+        return input_r_value, conv_r_value, output_embedding
 
 
 class dMaSIFSiteEmbed(nn.Module):
@@ -275,14 +287,16 @@ class dMaSIFSiteEmbed(nn.Module):
             cfg.radius,
         )
 
-    def forward(self, protein: Protein, features: Tensor) -> Tensor:
+    def forward(
+        self, surface_xyz: Tensor, surface_normals: Tensor, features: Tensor
+    ) -> Tensor:
         feature_scores = self.orientation_scores(features)
         nuv = self.conv.load_mesh(
-            protein.surface_xyz,
-            protein.surface_normals,
+            surface_xyz,
+            surface_normals,
             weights=feature_scores,
         )
-        return self.conv(features, protein.surface_xyz, nuv)
+        return self.conv(features, surface_xyz, nuv)
 
 
 class dMaSIFSearchEmbed(dMaSIFSiteEmbed):
@@ -308,89 +322,36 @@ class dMaSIFSearchEmbed(dMaSIFSiteEmbed):
             radius=radius,
         )
 
-    def forward(self, P: dict[str, Tensor | None], features: Tensor):
-        super().forward(P, features)
+    def forward(
+        self,
+        surface_xyz_1: Tensor,
+        surface_normals_1: Tensor,
+        surface_xyz_2: Tensor,
+        surface_normals_2: Tensor,
+        features: Tensor,
+    ):
+        super().forward(surface_xyz_1, surface_normals_1, features)
         feature_scores_2 = self.orientation_scores2(features)
         nuv2 = self.conv2.load_mesh(
-            P["xyz"],
-            normals=P["normals"],
+            surface_xyz_2,
+            normals=surface_normals_2,
             weights=feature_scores_2,
-            batch=P["batch"],
         )
-        P["embedding_2"] = self.conv2(features, nuv2)
-
-
-class DGCNNSiteEmbed(nn.Module):
-    def __init__(self, in_channels: int, emb_dims: int, n_layers: int, knn: int):
-        super().__init__()
-        self.conv = DGCNN_seg(in_channels + 3, emb_dims, n_layers, knn)
-
-    @classmethod
-    def from_config(cls, cfg: SiteModelConfig):
-        return cls(cfg.in_channels, cfg.emb_dims, cfg.n_layers, cfg.knn)
-
-    def forward(self, P: dict[str, Tensor | None], features):
-        features = torch.cat([features, P["xyz"]], dim=-1).contiguous()
-        P["embedding_1"] = self.conv(P["xyz"], features, P["batch"])
-
-
-class DGCNNSearchEmbed(DGCNNSiteEmbed):
-    def __init__(self, in_channels: int, emb_dims: int, n_layers: int, knn: int):
-        super().__init__(in_channels, emb_dims, n_layers, knn)
-        self.conv2 = DGCNN_seg(in_channels + 3, emb_dims, n_layers, knn)
-
-    def forward(self, P, features):
-        super().forward(P, features)
-        P["embedding_2"] = self.conv2(P["xyz"], features, P["batch"])
-
-
-class PointNetSiteEmbed(nn.Module):
-    def __init__(self, in_channels: int, emb_dims: int, radius: float, n_layers: int):
-        self.conv = PointNet2_seg(in_channels, emb_dims, radius, n_layers)
-
-    @classmethod
-    def from_config(cls, cfg: SiteModelConfig):
-        return cls(
-            cfg.in_channels,
-            cfg.emb_dims,
-            cfg.radius,
-            cfg.n_layers,
-        )
-
-    def forward(self, P: dict[str, Tensor | None], features):
-        P["embedding_1"] = self.conv(P["xyz"], features, P["batch"])
-
-
-class PointNetSearchEmbed(PointNetSiteEmbed):
-    def __init__(self, in_channels: int, emb_dims: int, radius: float, n_layers: int):
-        super().__init__(in_channels, emb_dims, radius, n_layers)
-        self.conv2 = PointNet2_seg(in_channels, emb_dims, radius, n_layers)
-
-    def forward(self, P: dict[str, Tensor | None], features):
-        super().forward(P, features)
-        P["embedding_2"] = self.conv2(P["xyz"], features, P["batch"])
+        return self.conv2(features, nuv2)
 
 
 MODELS = {Mode.SEARCH: SearchModel, Mode.SITE: SiteModel}
 EMBEDDING_MODELS = {
-    Mode.SEARCH: {
-        "dMaSIF": dMaSIFSearchEmbed,
-        "DCGNN": DGCNNSearchEmbed,
-        "PointNet": PointNetSearchEmbed,
-    },
-    Mode.SITE: {
-        "dMaSIF": dMaSIFSiteEmbed,
-        "DCGNN": DGCNNSiteEmbed,
-        "PointNet": PointNetSiteEmbed,
-    },
+    Mode.SEARCH: dMaSIFSearchEmbed,
+    Mode.SITE: dMaSIFSiteEmbed,
 }
 
 
-def load_model(mode: Mode, cfg: ModelConfig, model_type: str = "dMaSIF") -> BaseModel:
+def load_model(mode: Mode, cfg: ModelConfig) -> BaseModel:
     """
     Choose the correct type of model depending on the desired mode
     and instantiate it from a ModelConfig
     """
-    embedding_model = EMBEDDING_MODELS[mode][model_type].from_config(cfg)
+    embedding_model = EMBEDDING_MODELS[mode].from_config(cfg)
     model = MODELS[mode].from_config(embedding_model, cfg)
     return model

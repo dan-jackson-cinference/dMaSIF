@@ -43,7 +43,9 @@ def collate_proteins(data: list[Protein]):
     )
 
 
-def create_dataloader(dataset: ProteinDataset, batch_size: int, split: str):
+def create_dataloader(
+    dataset: ProteinDataset, batch_size: int, split: str
+) -> DataLoader:
     return DataLoader(
         dataset, batch_size, shuffle=split == "train", collate_fn=collate_proteins
     )
