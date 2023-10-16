@@ -1,4 +1,5 @@
 import torch
+from torch import Tensor
 
 tensor = torch.cuda.FloatTensor if torch.cuda.is_available() else torch.FloatTensor
 inttensor = torch.cuda.LongTensor if torch.cuda.is_available() else torch.LongTensor
@@ -31,7 +32,7 @@ def diagonal_ranges(batch_x=None, batch_y=None):
     return ranges_x, slices_x, ranges_y, ranges_y, slices_y, ranges_x
 
 
-def soft_dimension(features) -> float:
+def soft_dimension(features: Tensor) -> float:
     """Continuous approximation of the rank of a (N, D) sample.
 
     Let "s" denote the (D,) vector of eigenvalues of Cov,

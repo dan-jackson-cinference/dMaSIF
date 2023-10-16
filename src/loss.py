@@ -1,43 +1,93 @@
 import torch
 import torch.nn.functional as F
+from pykeops.torch import LazyTensor
 from torch import Tensor
 
-from data import Mode
+from enums import Mode
 
 
-def compute_search_preds(p1, p2, *args, **kwargs):
-    pos_xyz1 = p1["xyz"][p1["labels"] == 1]
-    pos_xyz2 = p2["xyz"][p2["labels"] == 1]
-    pos_descs1 = p1["embedding_1"][p1["labels"] == 1]
-    pos_descs2 = p2["embedding_2"][p2["labels"] == 1]
+def split_feature(feature: Tensor, split_idx: int) -> tuple[Tensor, Tensor]:
+    return feature[:split_idx], feature[split_idx:]
 
-    pos_xyz_dists = ((pos_xyz1[:, None, :] - pos_xyz2[None, :, :]) ** 2).sum(-1).sqrt()
-    pos_desc_dists = torch.matmul(pos_descs1, pos_descs2.T)
 
-    pos_preds = pos_desc_dists[pos_xyz_dists < 1.0]
-    pos_labels = torch.ones_like(pos_preds)
+def lazy_pairwise_distance(coords_1: Tensor, coords_2: Tensor) -> Tensor:
+    lazy_coords_1 = LazyTensor(coords_1[:, None, :])
+    lazy_coords_2 = LazyTensor(coords_2[None, :, :])
+    return ((lazy_coords_1 - lazy_coords_2) ** 2).sum(-1).sqrt()
 
-    n_desc_sample = 100
-    sample_desc2 = torch.randperm(len(p2["embedding_2"]))[:n_desc_sample]
-    sample_desc2 = p2["embedding_2"][sample_desc2]
-    neg_preds = torch.matmul(pos_descs1, sample_desc2.T).view(-1)
-    neg_labels = torch.zeros_like(neg_preds)
 
-    # For symmetry
-    pos_descs1_2 = p1["embedding_2"][p1["labels"] == 1]
-    pos_descs2_2 = p2["embedding_1"][p2["labels"] == 1]
+def pairwise_distances(coords_1: Tensor, coords_2: Tensor) -> Tensor:
+    return ((coords_1[:, None, :] - coords_2[None, :, :]) ** 2).sum(-1).sqrt()
 
-    pos_desc_dists2 = torch.matmul(pos_descs2_2, pos_descs1_2.T)
-    pos_preds2 = pos_desc_dists2[pos_xyz_dists.T < 1.0]
-    pos_preds = torch.cat([pos_preds, pos_preds2], dim=0)
-    pos_labels = torch.ones_like(pos_preds)
 
-    sample_desc1_2 = torch.randperm(len(p1["embedding_2"]))[:n_desc_sample]
-    sample_desc1_2 = p1["embedding_2"][sample_desc1_2]
-    neg_preds_2 = torch.matmul(pos_descs2_2, sample_desc1_2.T).view(-1)
+def generate_interface_labels(
+    surface_1: Tensor, surface_2: Tensor, threshold: float = 1.0
+) -> tuple[Tensor, Tensor]:
+    """Only use positive labels for points on the surface that are within a given distance of each other"""
+    coords_1 = LazyTensor(surface_1[:, None, :].contiguous())
+    coords_2 = LazyTensor(surface_2[None, :, :].contiguous())
+    pairwise_dists = ((coords_1 - coords_2) ** 2).sum(-1).sqrt()
+    interface = (threshold - pairwise_dists).step()
 
-    neg_preds = torch.cat([neg_preds, neg_preds_2], dim=0)
-    neg_labels = torch.zeros_like(neg_preds)
+    interface_labels_1 = interface.max(1)
+    interface_labels_2 = interface.max(0)
+
+    return interface_labels_1.squeeze(), interface_labels_2.squeeze()
+
+
+def compute_search_loss(
+    surface_xyz: Tensor,
+    embedding_1: Tensor,
+    embedding_2: Tensor,
+    len_surface: int,
+    sample_neg_points: int = 1000,
+):
+    surface_xyz_1, surface_xyz_2 = split_feature(surface_xyz, len_surface)
+
+    interface_labels_1, interface_labels_2 = generate_interface_labels(
+        surface_xyz_1, surface_xyz_2
+    )
+    interface_points_1 = surface_xyz_1[interface_labels_1 == 1]
+    interface_points_2 = surface_xyz_2[interface_labels_2 == 1]
+
+    interface_labels = torch.outer(
+        interface_labels_1[interface_labels_1 == 1],
+        interface_labels_2[interface_labels_2 == 1],
+    )
+    dists = pairwise_distances(interface_points_1, interface_points_2)
+    interface_labels[dists > 1.0] = 0
+
+    embedding_1_1, embedding_2_1 = split_feature(embedding_1, len_surface)
+    embedding_1_2, embedding_2_2 = split_feature(embedding_2, len_surface)
+
+    pos_features_1_1 = embedding_1_1[interface_labels_1 == 1]
+    pos_features_2_1 = embedding_2_1[interface_labels_2 == 1]
+    interface_preds_1 = torch.matmul(pos_features_1_1, pos_features_2_1.T)
+
+    pos_features_1_2 = embedding_1_2[interface_labels_1 == 1]
+    pos_features_2_2 = embedding_2_2[interface_labels_2 == 1]
+    interface_preds_2 = torch.matmul(pos_features_1_2, pos_features_2_2.T)
+
+    print(interface_labels.shape)
+    print(interface_labels.sum())
+    print(interface_preds_1.shape)
+    print(interface_preds_2.shape)
+
+    neg_features_1_1 = embedding_1_1[interface_labels_1 == 0]
+    neg_features_2_1 = embedding_2_1[interface_labels_2 == 0]
+    samples_idxs_1_1 = torch.randint(
+        low=0, high=len(neg_features_1_1), size=(sample_neg_points,)
+    )
+    samples_idxs_2_1 = torch.randint(
+        low=0, high=len(neg_features_2_1), size=(sample_neg_points,)
+    )
+    sampled_neg_features_1_1 = neg_features_1_1[samples_idxs_1_1]
+    sampled_neg_features_2_1 = neg_features_1_1[samples_idxs_2_1]
+
+    neg_interface_preds = torch.matmul(
+        sampled_neg_features_1_1, sampled_neg_features_2_1.T
+    )
+
     return pos_preds, pos_labels, neg_preds, neg_labels
 
 
@@ -64,4 +114,4 @@ def compute_site_loss(predictions: Tensor, labels: Tensor) -> Tensor:
     return loss
 
 
-LOSS_FNS = {Mode.SEARCH: compute_search_preds, Mode.SITE: compute_site_loss}
+LOSS_FNS = {Mode.SEARCH: compute_search_loss, Mode.SITE: compute_site_loss}

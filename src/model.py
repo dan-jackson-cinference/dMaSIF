@@ -4,68 +4,11 @@ import torch
 from torch import Tensor, nn
 
 from atomnet import AtomNetMP
-from benchmark_models import DGCNN_seg, PointNet2_seg, dMaSIFConv_seg
+from benchmark_models import dMaSIFConv_seg
 from enums import Mode
 from geometry_processing import curvatures
 from helper import soft_dimension
 from load_configs import ModelConfig, SearchModelConfig, SiteModelConfig
-from protein import Protein
-
-
-def combine_pair(
-    p1: dict[str, Tensor | None], p2: dict[str, Tensor | None]
-) -> dict[str, Tensor | None]:
-    p1p2: dict[str, Tensor | None] = {}
-    for key in p1:
-        v1 = p1[key]
-        v2 = p2[key]
-        if v1 is None:
-            continue
-
-        if key in ("batch", "batch_atoms"):
-            v1v2 = torch.cat([v1, v2 + v1[-1] + 1], dim=0)
-        elif key == "triangles":
-            # v1v2 = torch.cat([v1,v2],dim=1)
-            continue
-        else:
-            v1v2 = torch.cat([v1, v2], dim=0)
-        p1p2[key] = v1v2
-
-    return p1p2
-
-
-def split_pair(p1p2):
-    batch_size = p1p2["batch_atoms"][-1] + 1
-    p1_indices = p1p2["batch"] < batch_size // 2
-    p2_indices = p1p2["batch"] >= batch_size // 2
-
-    p1_atom_indices = p1p2["batch_atoms"] < batch_size // 2
-    p2_atom_indices = p1p2["batch_atoms"] >= batch_size // 2
-
-    p1 = {}
-    p2 = {}
-    for key in p1p2:
-        v1v2 = p1p2[key]
-
-        if key in ("rand_rot", "atom_center"):
-            n = v1v2.shape[0] // 2
-            p1[key] = v1v2[:n].view(-1, 3)
-            p2[key] = v1v2[n:].view(-1, 3)
-        elif "atom" in key:
-            p1[key] = v1v2[p1_atom_indices]
-            p2[key] = v1v2[p2_atom_indices]
-        elif key == "triangles":
-            continue
-            # p1[key] = v1v2[:,p1_atom_indices]
-            # p2[key] = v1v2[:,p2_atom_indices]
-        else:
-            p1[key] = v1v2[p1_indices]
-            p2[key] = v1v2[p2_indices]
-
-    p2["batch"] = p2["batch"] - batch_size + 1
-    p2["batch_atoms"] = p2["batch_atoms"] - batch_size + 1
-
-    return p1, p2
 
 
 class BaseModel(nn.Module):
@@ -95,7 +38,6 @@ class BaseModel(nn.Module):
         atom_types: Tensor,
     ) -> Tensor:
         """Estimates geometric and chemical features from a protein surface or a cloud of atoms."""
-
         # Estimate the curvatures using the triangles or the estimated normals:
         protein_curvatures = curvatures(
             surface_xyz,
@@ -120,7 +62,7 @@ class BaseModel(nn.Module):
         surface_normals: Tensor,
         atom_coords: Tensor,
         atom_types: Tensor,
-    ) -> tuple[float, float]:
+    ) -> tuple[Tensor, Tensor]:
         """Embeds all points of a protein in a high-dimensional vector space."""
         input_features = self.dropout(
             self.features(
@@ -167,7 +109,7 @@ class SiteModel(BaseModel):
     @classmethod
     def from_config(
         cls,
-        embedding_model: nn.Module,
+        embedding_model: dMaSIFSiteEmbed,
         cfg: SiteModelConfig,
     ) -> SiteModel:
         """Instantiate a SiteModel object from a config"""
@@ -221,34 +163,23 @@ class SearchModel(BaseModel):
 
     def forward(
         self,
-        surface_xyz_1: Tensor,
-        surface_normals_1: Tensor,
-        atom_coords_1: Tensor,
-        atom_types_1: Tensor,
-        surface_xyz_2: Tensor,
-        surface_normals_2: Tensor,
-        atom_coords_2: Tensor,
-        atom_types_2: Tensor,
+        surface_xyz: Tensor,
+        surface_normals: Tensor,
+        atom_coords: Tensor,
+        atom_types: Tensor,
     ):
         """Compute embeddings of the point clouds"""
-        features_1 = self.features(
-            surface_xyz_1, surface_normals_1, atom_coords_1, atom_types_1
-        )
-        features_1 = self.dropout(features_1)
-        features_2 = self.features(
-            surface_xyz_2, surface_normals_2, atom_coords_2, atom_types_2
-        )
-        features_2 = self.dropout(features_2)
-
-        output_embedding = self.embedding_model(
-            surface_xyz_1, surface_normals_1, surface_xyz_2, surface_normals_2
+        features = self.features(surface_xyz, surface_normals, atom_coords, atom_types)
+        features = self.dropout(features)
+        output_embedding_1, output_embedding_2 = self.embedding_model(
+            surface_xyz, surface_normals, features
         )
 
         # Monitor the approximate rank of our representations:
-        input_r_value = soft_dimension(input_features)
-        conv_r_value = soft_dimension(output_embedding)
+        input_r_value = soft_dimension(features)
+        conv_r_value = soft_dimension(output_embedding_1)
 
-        return input_r_value, conv_r_value, output_embedding
+        return output_embedding_1, output_embedding_2, input_r_value, conv_r_value
 
 
 class dMaSIFSiteEmbed(nn.Module):
@@ -277,7 +208,7 @@ class dMaSIFSiteEmbed(nn.Module):
         )
 
     @classmethod
-    def from_config(cls, cfg: SiteModelConfig):
+    def from_config(cls, cfg: ModelConfig):
         "Create an instance of the DMasifSiteEmbed model from a config object"
         return cls(
             cfg.in_channels,
@@ -296,7 +227,9 @@ class dMaSIFSiteEmbed(nn.Module):
             surface_normals,
             weights=feature_scores,
         )
-        return self.conv(features, surface_xyz, nuv)
+
+        embedding = self.conv(features, surface_xyz, nuv)
+        return embedding
 
 
 class dMaSIFSearchEmbed(dMaSIFSiteEmbed):
@@ -324,20 +257,18 @@ class dMaSIFSearchEmbed(dMaSIFSiteEmbed):
 
     def forward(
         self,
-        surface_xyz_1: Tensor,
-        surface_normals_1: Tensor,
-        surface_xyz_2: Tensor,
-        surface_normals_2: Tensor,
+        surface_xyz: Tensor,
+        surface_normals: Tensor,
         features: Tensor,
     ):
-        super().forward(surface_xyz_1, surface_normals_1, features)
+        output_embedding_1 = super().forward(surface_xyz, surface_normals, features)
         feature_scores_2 = self.orientation_scores2(features)
         nuv2 = self.conv2.load_mesh(
-            surface_xyz_2,
-            normals=surface_normals_2,
+            surface_xyz,
+            normals=surface_normals,
             weights=feature_scores_2,
         )
-        return self.conv2(features, nuv2)
+        return output_embedding_1, self.conv2(features, surface_xyz, nuv2)
 
 
 MODELS = {Mode.SEARCH: SearchModel, Mode.SITE: SiteModel}

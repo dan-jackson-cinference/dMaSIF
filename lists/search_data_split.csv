@@ -1,4 +1,4 @@
-pdb_id,chain_a, chain_b, split
+pdb_id,chain_a,chain_b,split
 1A2K,C,AB,test
 1A2W,A,B,test
 1A79,C,B,test

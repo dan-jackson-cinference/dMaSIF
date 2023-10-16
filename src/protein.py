@@ -80,7 +80,9 @@ class Protein:
             if single_pdb
             else torch.from_numpy(
                 np.load(data_dir / (pdb_file + "_iface_labels.npy")).reshape((-1, 1))
-            ).type(torch.float32)
+            )
+            .type(torch.float32)
+            .squeeze()
         )
 
         # Features
@@ -237,11 +239,11 @@ class Protein:
         points = points - 0.5 * normals
         return points.detach(), normals.detach()
 
-    def project_iface_labels(self, threshold: float = 2.0):
+    def project_iface_labels(self, threshold: float = 2.0) -> Tensor:
         """We have to update the labels for the new point cloud representation"""
         queries = self.surface_xyz
         source = self.xyz
-        labels = self.mesh_labels
+        labels = self.mesh_labels[:, None]
 
         x_i = LazyTensor(queries[:, None, :])  # (N, 1, D)
         y_j = LazyTensor(source[None, :, :])  # (1, M, D)
@@ -250,7 +252,8 @@ class Protein:
         nn_i = D_ij.argmin(dim=1).view(-1)  # (N,)
         # If chain is not connected because of missing densities MaSIF cut out a part of the protein
         nn_dist_i = (D_ij.min(dim=1).view(-1, 1) < threshold).float()
-        return labels[nn_i] * nn_dist_i
+        query_labels = (labels[nn_i] * nn_dist_i).squeeze()
+        return query_labels
 
     def compute_surface_features(
         self, resolution: float, sup_sampling: int, distance: float

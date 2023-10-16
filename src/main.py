@@ -4,14 +4,12 @@ import hydra
 import numpy as np
 import torch
 
-from data import load_training_data
 from dataset import create_dataloader, create_datasets
 from enums import Mode
 from load_configs import Config, ModelConfig, TrainingConfig
 from model import load_model
 from pl_trainer import train as pl_train
-from process_data import SurfaceProcessor
-from train import train
+from process_data import PROCESSORS
 
 
 def set_seed(seed: int) -> None:
@@ -37,16 +35,21 @@ def main(cfg: Config):
     model = load_model(mode, cfg.model)
 
     if not os.path.exists(checkpoint):
-        processor = SurfaceProcessor.from_config(root_dir="surface_data", cfg=cfg.data)
+        processor = PROCESSORS[mode].from_config(root_dir="surface_data", cfg=cfg.data)
         train_data, test_data = processor.load_processed_data()
         datasets = create_datasets(train_data, test_data, cfg.data.validation_fraction)
         dataloaders = {
-            split: create_dataloader(dataset, 2, split)
+            split: create_dataloader(dataset, mode=mode, batch_size=1, split=split)
             for split, dataset in datasets.items()
         }
 
         model = pl_train(
-            model, cfg.training, dataloaders["train"], dataloaders["val"], checkpoint  # type: ignore
+            mode,
+            model,
+            cfg.training,
+            dataloaders["train"],
+            dataloaders["val"],
+            checkpoint,
         )
     else:
         pass

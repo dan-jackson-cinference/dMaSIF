@@ -1,6 +1,8 @@
 import torch
+from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, random_split
 
+from enums import Mode
 from protein import Protein
 
 
@@ -32,20 +34,44 @@ def create_datasets(
     return {"train": train_dataset, "val": val_dataset, "test": test_dataset}
 
 
-def collate_proteins(data: list[Protein]):
+def collate_proteins(
+    data: list[Protein],
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
     protein = data[0]
     return (
         protein.surface_xyz,
         protein.surface_normals,
         protein.atom_coords,
-        protein.atom_coords,
+        protein.atom_types,
         protein.surface_labels,
     )
 
 
-def create_dataloader(
-    dataset: ProteinDataset, batch_size: int, split: str
-) -> DataLoader:
-    return DataLoader(
-        dataset, batch_size, shuffle=split == "train", collate_fn=collate_proteins
+def collate_protein_pairs(
+    data: list[tuple[Protein, Protein]]
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, float]:
+    protein_1, protein_2 = data[0]
+
+    return (
+        torch.cat([protein_1.surface_xyz, protein_2.surface_xyz]),
+        torch.cat([protein_1.surface_normals, protein_2.surface_normals]),
+        torch.cat([protein_1.atom_coords, protein_2.atom_coords]),
+        torch.cat([protein_1.atom_types, protein_2.atom_types]),
+        torch.cat([protein_1.surface_labels, protein_2.surface_labels]),
+        len(protein_1.surface_xyz),
     )
+
+
+def create_dataloader(
+    dataset: ProteinDataset, mode: Mode, batch_size: int, split: str
+) -> DataLoader[Tensor]:
+    return DataLoader(
+        dataset,
+        batch_size,
+        shuffle=split == "train",
+        collate_fn=COLLATE_FNS[mode],
+        num_workers=4,
+    )
+
+
+COLLATE_FNS = {Mode.SEARCH: collate_protein_pairs, Mode.SITE: collate_proteins}

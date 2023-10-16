@@ -45,14 +45,15 @@ class DataConfig:
     distance: float = 1.05
     validation_fraction: float = 0.1
     random_rotation: bool = False
+    debug: bool = False
 
 
 @dataclass
 class TrainingConfig:
-    n_epochs: int = 50
+    n_epochs: int = 100
     batch_size: int = 1
     optimizer: str = "adam"
-    lr: float = 0.0001
+    lr: float = 0.001
     lr_scheduler: Optional[str] = None
     restart_training: str = ""
 

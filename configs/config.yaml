@@ -1,6 +1,5 @@
 defaults:
   - dMaSIF
-  - model: site_model_cfg
   - data: data_cfg
   - training: training_cfg
   - _self_
