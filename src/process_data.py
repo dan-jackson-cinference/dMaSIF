@@ -14,16 +14,13 @@ from pykeops.torch import LazyTensor
 from torch import Tensor
 from tqdm import tqdm
 
-from data_preprocessing.convert_pdb2npy import convert_pdbs
-from data_preprocessing.convert_ply2npy import convert_plys
-from enums import Mode
 from load_configs import DataConfig
-from protein import Protein
+from protein import Protein, ProteinPair, ProteinProtocol
 
 
 def protein_labels_valid(protein: Protein) -> bool:
     """Check that the labels for the interaction site are reasonable"""
-    labels = protein.mesh_labels.reshape(-1)
+    labels = protein.surface_labels.reshape(-1)
     return (labels.sum() < 0.75 * len(labels)).item() and (labels.sum() > 30).item()
 
 
@@ -54,7 +51,7 @@ def pickle_dump(data: Any, save_path: Path):
         pickle.dump(data, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
 
-def pickle_load(file: Path) -> list[Protein] | list[tuple[Protein, Protein]]:
+def pickle_load(file: Path) -> list[ProteinProtocol]:
     with open(file, "rb") as handle:
         b = pickle.load(handle)
     return b
@@ -62,6 +59,46 @@ def pickle_load(file: Path) -> list[Protein] | list[tuple[Protein, Protein]]:
 
 def pairwise_distance(coords_1: LazyTensor, coords_2: LazyTensor) -> LazyTensor:
     return ((coords_1[:, None, :] - coords_2[None, :, :]) ** 2).sum(-1).sqrt()
+
+
+def update_interface_labels(
+    p_1: Protein,
+    p_2: Protein,
+    threshold: float,
+) -> Tensor:
+    """
+    Generate 3 classes of label:
+    0: This is not a candidate binding site (given a label of 0 by MaSIF)
+    1: This is a candidate binding site (given a label of 1 by MaSIF), but \
+        is not in the interface
+    2: This is a candidate binding site and is in the interface \
+        (as defined by a distance to a vertex on the other protein < threshold)
+    """
+    coords_1 = LazyTensor(p_1.surface_xyz[:, None, :].contiguous())
+    coords_2 = LazyTensor(p_2.surface_xyz[None, :, :].contiguous())
+    pairwise_dists = ((coords_1 - coords_2) ** 2).sum(-1).sqrt()
+    interface = (threshold - pairwise_dists).step()
+
+    interface_labels_1 = interface.max(1).squeeze()
+    interface_labels_2 = interface.max(0).squeeze()
+
+    # Binary classification
+    p_1.surface_labels = interface_labels_1
+    p_2.surface_labels = interface_labels_2
+
+    # Multiclass cassification
+    # p_1.surface_labels[interface_labels_1 == 1] = 2
+    # p_2.surface_labels[interface_labels_2 == 1] = 2
+
+    p_1.surface_labels.squeeze()
+    p_2.surface_labels.squeeze()
+
+    if_coords_1 = p_1.surface_xyz[interface_labels_1 == 1][:, None, :]
+    if_coords_2 = p_2.surface_xyz[interface_labels_2 == 1][None, :, :]
+
+    if_dists = ((if_coords_1 - if_coords_2) ** 2).sum(-1).sqrt()
+    if_labels = torch.heaviside(threshold - if_dists, torch.tensor([0.0]))
+    return if_labels
 
 
 class SurfaceProcessor(ABC):
@@ -83,7 +120,6 @@ class SurfaceProcessor(ABC):
             self.raw_data_dir / "masif_site_masif_search_pdbs_and_ply_files.tar.gz"
         )
         self.surface_dir = self.raw_data_dir / "01-benchmark_surfaces"
-        self.features_dir = self.raw_data_dir / "01-benchmark_surfaces_npy"
         self.pdb_dir = self.raw_data_dir / "01-benchmark_pdbs"
 
         self.resolution = resolution
@@ -108,7 +144,7 @@ class SurfaceProcessor(ABC):
         else:
             print("TAR FILE ALREADY DOWNLOADED")
 
-    def preprocess(self):
+    def extract(self):
         """Untar the ply and pdb files and convert them to numpy files"""
 
         if not (self.pdb_dir.exists() and self.surface_dir.exists()):
@@ -117,22 +153,19 @@ class SurfaceProcessor(ABC):
         else:
             print("TAR FILE ALREADY EXTRACTED")
 
-        if not self.features_dir.exists():
-            self.features_dir.mkdir(parents=False, exist_ok=False)
-            convert_plys(self.surface_dir, self.features_dir)
-            convert_pdbs(self.pdb_dir, self.features_dir)
-
     @abstractmethod
     def split(self) -> None:
         raise NotImplementedError
 
     @abstractmethod
-    def load_processed_data(self) -> list[Protein]:
+    def load_processed_data(
+        self,
+    ) -> tuple[list[ProteinProtocol], list[ProteinProtocol]]:
         raise NotImplementedError
 
 
 class SiteProcessor(SurfaceProcessor):
-    def split(self, precompute_surface_features: bool = True):
+    def split(self):
         """Load Protein objects from the preprocessed data and split by dataset"""
         print("LOADING DATASETS")
         lists_dir = Path("./lists")
@@ -142,30 +175,30 @@ class SiteProcessor(SurfaceProcessor):
         test_data: list[Protein] = []
         for data in tqdm(data_split):
             try:
-                protein = Protein.from_numpy(
-                    data["pdb_id"], data["chains"], self.features_dir
+                protein = Protein.from_ply_and_pdb(
+                    f"{data['pdb_id']}_{data['chains']}",
+                    self.surface_dir,
+                    self.pdb_dir,
                 )
                 if not protein_labels_valid(protein):
                     continue
             except FileNotFoundError:
                 continue
-            if precompute_surface_features:
-                protein.compute_surface_features(
-                    self.resolution, self.sup_sampling, self.distance
-                )
             if data["split"] == "train":
                 train_data.append(protein)
             elif data["split"] == "test":
                 test_data.append(protein)
 
-        pickle_dump(train_data, self.processed_data_dir / "site_train_data")
-        pickle_dump(test_data, self.processed_data_dir / "site_test_data")
+        pickle_dump(train_data, self.processed_data_dir / "site_train_data.pickle")
+        pickle_dump(test_data, self.processed_data_dir / "site_test_data.pickle")
 
-    def load_processed_data(self):
+    def load_processed_data(
+        self,
+    ) -> tuple[list[ProteinProtocol], list[ProteinProtocol]]:
         if not (self.processed_data_dir / "site_train_data.pickle").exists():
-            self.processed_data_dir.mkdir()
+            self.processed_data_dir.mkdir(exist_ok=True)
             self.download()
-            self.preprocess()
+            self.extract()
             self.split()
         train_data = pickle_load(self.processed_data_dir / "site_train_data.pickle")
         test_data = pickle_load(self.processed_data_dir / "site_test_data.pickle")
@@ -173,7 +206,7 @@ class SiteProcessor(SurfaceProcessor):
 
 
 class SearchProcessor(SurfaceProcessor):
-    def split(self, precompute_surface_features: bool = True):
+    def split(self):
         """Load Protein objects from the preprocessed data and split by dataset"""
         print("LOADING DATASETS")
         lists_dir = Path("./lists")
@@ -182,70 +215,77 @@ class SearchProcessor(SurfaceProcessor):
         )
         data_split = load_csv(lists_dir / split_file)
 
-        train_data: list[tuple[Protein, Protein]] = []
-        test_data: list[tuple[Protein, Protein]] = []
+        train_data: list[ProteinPair] = []
+        test_data: list[ProteinPair] = []
         for data in tqdm(data_split):
             try:
-                protein_1 = Protein.from_numpy(
-                    data["pdb_id"], data["chain_a"], self.features_dir
+                protein_1 = Protein.from_ply_and_pdb(
+                    f"{data['pdb_id']}_{data['chain_a']}",
+                    self.surface_dir,
+                    self.pdb_dir,
                 )
-                protein_2 = Protein.from_numpy(
-                    data["pdb_id"], data["chain_b"], self.features_dir
+
+                protein_2 = Protein.from_ply_and_pdb(
+                    f"{data['pdb_id']}_{data['chain_b']}",
+                    self.surface_dir,
+                    self.pdb_dir,
                 )
+
                 if not protein_labels_valid(protein_1) or not protein_labels_valid(
                     protein_2
                 ):
                     continue
 
+                if_labels = update_interface_labels(
+                    protein_1,
+                    protein_2,
+                    threshold=2.0,
+                )
+
+                protein_1.center_protein()
+                protein_2.center_protein()
+
+                protein_pair = ProteinPair(protein_1, protein_2, if_labels)
             except FileNotFoundError:
+                print(f"PDB id {data['pdb_id']} not found")
                 continue
-            if precompute_surface_features:
-                protein_1.compute_surface_features(
-                    self.resolution, self.sup_sampling, self.distance
-                )
-                protein_2.compute_surface_features(
-                    self.resolution, self.sup_sampling, self.distance
-                )
 
             if data["split"] == "train":
-                train_data.append((protein_1, protein_2))
+                train_data.append(protein_pair)
             elif data["split"] == "test":
-                test_data.append((protein_1, protein_2))
+                test_data.append(protein_pair)
 
         train_file = (
-            "search_train_data_clean_debug.pickle"
+            "search_train_data_debug.pickle"
             if self.debug
-            else "search_train_data_clean.pickle"
+            else "search_train_data.pickle"
         )
         test_file = (
-            "search_test_data_clean_debug.pickle"
-            if self.debug
-            else "search_test_data_clean.pickle"
+            "search_test_data_debug.pickle" if self.debug else "search_test_data.pickle"
         )
 
         pickle_dump(train_data, self.processed_data_dir / train_file)
         pickle_dump(test_data, self.processed_data_dir / test_file)
 
-    def load_processed_data(self):
+    def load_processed_data(
+        self,
+    ) -> tuple[list[ProteinProtocol], list[ProteinProtocol]]:
         train_file = (
-            "search_train_data_clean_debug.pickle"
+            "search_train_data_debug.pickle"
             if self.debug
-            else "search_train_data_clean.pickle"
+            else "search_train_data.pickle"
         )
         test_file = (
-            "search_test_data_clean_debug.pickle"
-            if self.debug
-            else "search_test_data_clean.pickle"
+            "search_test_data_debug.pickle" if self.debug else "search_test_data.pickle"
         )
         if not (self.processed_data_dir / train_file).exists():
-            print(self.processed_data_dir)
             self.processed_data_dir.mkdir(exist_ok=True)
             self.download()
-            self.preprocess()
+            self.extract()
             self.split()
         train_data = pickle_load(self.processed_data_dir / train_file)
         test_data = pickle_load(self.processed_data_dir / test_file)
         return train_data, test_data
 
 
-PROCESSORS = {Mode.SEARCH: SearchProcessor, Mode.SITE: SiteProcessor}
+PROCESSORS = {"search": SearchProcessor, "site": SiteProcessor}

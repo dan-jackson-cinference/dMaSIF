@@ -196,8 +196,8 @@ class dMaSIFConv(nn.Module):
         # 2.b Encode the variables as KeOps LazyTensors
 
         # Vertices:
-        x_i = LazyTensor(points[:, None, :])  # (N, 1, 3)
-        x_j = LazyTensor(points[None, :, :])  # (1, N, 3)
+        x_i = LazyTensor(points[:, None, :].contiguous())  # (N, 1, 3)
+        x_j = LazyTensor(points[None, :, :].contiguous())  # (1, N, 3)
 
         # WARNING - Here, we assume that the normals are fixed:
         normals = (
@@ -209,7 +209,7 @@ class dMaSIFConv(nn.Module):
         # Normals:
         n_i = nuv_i[:3]  # (N, 1, 3)
 
-        n_j = LazyTensor(normals[None, :, :])  # (1, N, 3)
+        n_j = LazyTensor(normals[None, :, :].contiguous())  # (1, N, 3)
 
         # To avoid register spilling when using large embeddings, we perform our KeOps reduction
         # over the vector of length "self.Hidden = self.n_heads * self.heads_dim"
@@ -224,7 +224,7 @@ class dMaSIFConv(nn.Module):
             ].contiguous()  # (N, H) -> (N, Hd)
 
             # Features:
-            f_j = LazyTensor(head_features[None, :, :])  # (1, N, Hd)
+            f_j = LazyTensor(head_features[None, :, :].contiguous())  # (1, N, Hd)
 
             # Convolution parameters:
             if self.cheap:
@@ -291,13 +291,13 @@ class dMaSIFConvBlock(torch.nn.Module):
 
     def __init__(self, in_channels: int, out_channels: int, radius: float):
         super().__init__()
-        self.linear_transform = nn.Linear(in_channels, out_channels)
         self.dmasif_conv = dMaSIFConv(in_channels, out_channels, out_channels, radius)
         self.linear_block = nn.Sequential(
             nn.Linear(out_channels, out_channels),
             nn.ReLU(),
             nn.Linear(out_channels, out_channels),
         )
+        self.linear_transform = nn.Linear(in_channels, out_channels)
 
     def forward(
         self,
@@ -306,12 +306,10 @@ class dMaSIFConvBlock(torch.nn.Module):
         nuv: Tensor,
         ranges: Tensor,
     ):
-        x = features
-        x_i = self.dmasif_conv(points, nuv, x, ranges)
-        x_i = self.linear_transform(features)
+        x_i = self.dmasif_conv(points, nuv, features, ranges)
         x_i = self.linear_block(x_i)
-        # x_i += x
-        return x_i
+        x_skip = self.linear_transform(features)
+        return x_i + x_skip
 
 
 class dMaSIFConv_seg(torch.nn.Module):
@@ -332,23 +330,9 @@ class dMaSIFConv_seg(torch.nn.Module):
 
     def forward(self, features: Tensor, points: Tensor, nuv: Tensor):
         # Lab: (B,), Pos: (N, 3), Batch: (N,)
-        x = features
-
         for block in self.blocks:
-            x = block(x, points, nuv, self.ranges)
-        return x
-
-    ### ORIGINAL CODE - THIS IS NOT DESCRIBED IN THE ARCHITECTURE IN THE PAPER
-    # def forward(self, features: Tensor, nuv: Tensor):
-    #     # Lab: (B,), Pos: (N, 3), Batch: (N,)
-    #     x = features
-    #     for i, layer in enumerate(self.layers):
-    #         x_i = layer(self.points, nuv, x, self.ranges)
-    #         x_i = self.linear_layers[i](x_i)
-    #         x = self.linear_transform[i](x)
-    #         x = x + x_i
-
-    #     return x
+            features = block(features, points, nuv, self.ranges)
+        return features
 
     def load_mesh(
         self,
@@ -387,11 +371,11 @@ class dMaSIFConv_seg(torch.nn.Module):
         # Orientation scores:
         weights_j = LazyTensor(weights.view(1, -1, 1))  # (1, N, 1)
         # Vertices:
-        x_i = LazyTensor(points[:, None, :])  # (N, 1, 3)
-        x_j = LazyTensor(points[None, :, :])  # (1, N, 3)
+        x_i = LazyTensor(points[:, None, :].contiguous())  # (N, 1, 3)
+        x_j = LazyTensor(points[None, :, :].contiguous())  # (1, N, 3)
         # Normals:
-        n_i = LazyTensor(normals[:, None, :])  # (N, 1, 3)
-        n_j = LazyTensor(normals[None, :, :])  # (1, N, 3)
+        n_i = LazyTensor(normals[:, None, :].contiguous())  # (N, 1, 3)
+        n_j = LazyTensor(normals[None, :, :].contiguous())  # (1, N, 3)
         # Tangent basis:
         uv_i = LazyTensor(tangent_bases.view(-1, 1, 6))  # (N, 1, 6)
 

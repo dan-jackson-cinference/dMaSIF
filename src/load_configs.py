@@ -4,12 +4,10 @@ from typing import Optional
 from hydra.core.config_store import ConfigStore
 from omegaconf import MISSING
 
-from enums import Mode
-
 
 @dataclass
 class ModelConfig:
-    mode: Mode = MISSING
+    mode: str = MISSING
     atom_dims: int = 6
     in_channels: int = 16
     orientation_units: int = 16
@@ -27,14 +25,14 @@ class ModelConfig:
 
 @dataclass
 class SiteModelConfig(ModelConfig):
-    mode: Mode = Mode.SITE
+    mode: str = "site"
     emb_dims: int = 8
     post_units: int = 8
 
 
 @dataclass
 class SearchModelConfig(ModelConfig):
-    mode: Mode = Mode.SEARCH
+    mode: str = "search"
     emb_dims: int = 16
 
 

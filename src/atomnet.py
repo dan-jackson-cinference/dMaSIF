@@ -7,8 +7,8 @@ from torch import Tensor, nn
 
 def knn_atoms(x, y, k):
     N, D = x.shape
-    x_i = LazyTensor(x[:, None, :])
-    y_j = LazyTensor(y[None, :, :])
+    x_i = LazyTensor(x[:, None, :].contiguous())
+    y_j = LazyTensor(y[None, :, :].contiguous())
 
     pairwise_distance_ij = ((x_i - y_j) ** 2).sum(-1)
     # pairwise_distance_ij.ranges = diagonal_ranges(x_batch, y_batch)

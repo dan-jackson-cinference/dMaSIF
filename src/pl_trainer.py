@@ -1,18 +1,18 @@
-from typing import Optional
+from typing import Callable, Optional
 
 import torch
 from lightning.pytorch import LightningModule, Trainer
 from lightning.pytorch.callbacks import EarlyStopping, LearningRateMonitor
 from lightning.pytorch.loggers import TensorBoardLogger
+from pykeops.torch import LazyTensor
 from sklearn.metrics import roc_auc_score
 from torch import Tensor, optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
-from enums import Mode
 from load_configs import TrainingConfig
-from loss import compute_search_loss, compute_site_loss
-from model import BaseModel
+from loss import compute_search_loss, compute_site_loss, split_feature
+from model import BaseModel, SearchModel, SiteModel
 
 
 def save_protein_batch_single(protein_pair_id, P, save_path, pdb_idx):
@@ -47,16 +47,24 @@ def numpy(x: Tensor):
     return x.detach().cpu().numpy()
 
 
-class dMaSIFTrainer(LightningModule):
+def embeddings_to_labels(embed_1: Tensor, embed_2: Tensor) -> tuple[Tensor, Tensor]:
+    lazy_1 = LazyTensor(embed_1[:, None, :])
+    lazy_2 = LazyTensor(embed_2[None, :, :])
+
+    labels_1 = (lazy_1 | lazy_2).max(1)
+    labels_2 = (lazy_1 | lazy_2).max(0)
+
+    return labels_1, labels_2
+
+
+class dMaSIFBaseModule(LightningModule):
     def __init__(
         self,
-        mode: Mode,
         model: BaseModel,
         learning_rate: float,
         save_path: Optional[str] = None,
     ):
         super().__init__()
-        self.mode = mode
         self.model = model
         self.save_path = save_path
         self.learning_rate = learning_rate
@@ -72,64 +80,30 @@ class dMaSIFTrainer(LightningModule):
             "monitor": "loss/val",
         }
 
-    def site_forwards(
-        self,
-        surface_xyz: Tensor,
-        surface_normals: Tensor,
-        atom_coords: Tensor,
-        atom_types: Tensor,
-    ):
-        """Run a forwards pass through the network for a single protein"""
-        interface_preds, input_r_value, conv_r_value = self.model(
-            surface_xyz, surface_normals, atom_coords, atom_types
-        )
 
-        return interface_preds
-
-    def search_forwards(
-        self,
-        surface_xyz: Tensor,
-        surface_normals: Tensor,
-        atom_coords: Tensor,
-        atom_types: Tensor,
-    ):
-        embedding_1, embedding_2, input_r_values, conv_r_value = self.model(
-            surface_xyz, surface_normals, atom_coords, atom_types
-        )
-        return embedding_1, embedding_2
+class dMaSIFSearchModule(dMaSIFBaseModule):
+    def __init__(self, model: SearchModel, learning_rate: float):
+        super().__init__(model, learning_rate)
+        self.loss_fn = compute_search_loss
 
     def training_step(
-        self, batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor], batch_idx
-    ):
-        (
-            surface_xyz,
-            surface_normals,
-            atom_coords,
-            atom_types,
-            surface_labels,
-            # split_idx,
-        ) = batch
-        if self.mode == Mode.SITE:
-            preds = self.site_forwards(
-                surface_xyz, surface_normals, atom_coords, atom_types
-            )
-            loss = compute_site_loss(preds, surface_labels)
-        if self.mode == Mode.SEARCH:
-            embedding_1, embedding_2 = self.search_forwards(
-                surface_xyz, surface_normals, atom_coords, atom_types
-            )
-            split_idx = 0
-            loss = compute_search_loss(surface_xyz, embedding_1, embedding_2, split_idx)
+        self,
+        batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int, Tensor],
+        batch_idx: int,
+    ) -> Tensor | None:
+        xyz, normals, atom_coords, atom_types, labels, split_idx, if_labels = batch
+        embed_1, embed_2 = self.model(xyz, normals, atom_coords, atom_types, split_idx)
+        loss, preds = self.loss_fn(if_labels, labels, embed_1, embed_2, split_idx)
 
         if torch.isnan(loss):
             return None
-        roc_auc = roc_auc_score(numpy(surface_labels), numpy(preds))
+        roc_auc = roc_auc_score(numpy(labels.view(-1)), numpy(preds.view(-1)))
         self.log(
             "loss/train",
             loss,
-            on_step=False,
+            on_step=True,
             on_epoch=True,
-            prog_bar=False,
+            prog_bar=True,
             batch_size=1,
         )
         self.log(
@@ -144,65 +118,146 @@ class dMaSIFTrainer(LightningModule):
 
     def validation_step(
         self,
-        batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor],
-        batch_idx,
+        batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int, Tensor],
+        batch_idx: int,
     ):
-        surface_xyz, surface_normals, atom_coords, atom_types, surface_labels = batch
-        if self.mode == Mode.SITE:
-            preds = self.site_forwards(
-                surface_xyz, surface_normals, atom_coords, atom_types
-            )
-            loss = compute_site_loss(preds, surface_labels)
-        if self.mode == Mode.SEARCH:
-            embedding_1, embedding_2 = self.search_forwards(
-                surface_xyz,
-                surface_normals,
-                atom_coords,
-                atom_types,
-            )
-            loss = compute_search_loss(
-                surface_xyz,
-                surface_labels,
-                embedding_1,
-                embedding_2,
-                len_surface_1,
-                len_atoms_1,
-            )
+        xyz, normals, atom_coords, atom_types, labels, split_idx, if_labels = batch
+        embed_1, embed_2 = self.model(xyz, normals, atom_coords, atom_types, split_idx)
+        loss, preds = self.loss_fn(if_labels, labels, embed_1, embed_2, split_idx)
+
         if not torch.isnan(loss):
-            roc_auc = roc_auc_score(numpy(surface_labels), numpy(preds))
+            roc_auc = roc_auc_score(numpy(labels.view(-1)), numpy(preds.view(-1)))
             self.log("loss/val", loss, prog_bar=True, batch_size=1)
             self.log("ROC_AUC/val", roc_auc, batch_size=1)
 
-    def test_step(self, batch, batch_idx):
-        surface_xyz, surface_normals, atom_coords, atom_types, surface_labels = batch
-        preds = self.forwards(surface_xyz, surface_normals, atom_coords, atom_types)
-        loss = compute_site_loss(preds, surface_labels)
+    def test_step(
+        self, batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int], batch_idx: int
+    ):
+        xyz, normals, atom_coords, atom_types, labels, split_idx = batch
+        preds = self.model(xyz, normals, atom_coords, atom_types, split_idx)
+        loss = self.loss_fn(preds, labels)
         if not torch.isnan(loss):
-            roc_auc = roc_auc_score(numpy(surface_labels), numpy(preds))
-        return roc_auc
+            roc_auc = roc_auc_score(numpy(labels), numpy(preds))
+        return loss
+
+    def predict_step(self, batch: list[Tensor, Tensor, Tensor, Tensor, int]):
+        xyz, normals, atom_coords, atom_types, split_idx = batch
+        embed_1, embed_2 = self.model(xyz, normals, atom_coords, atom_types, split_idx)
+
+        p1_embed_1, p2_embed_1 = split_feature(embed_1, split_idx)
+        p1_embed_2, p2_embed_2 = split_feature(embed_2, split_idx)
+
+        labels_1, labels_2 = embeddings_to_labels(p1_embed_1, p2_embed_2)
+        print(labels_1.shape)
+        print(labels_2.shape)
+        print(labels_1.max())
+        print(labels_1.min())
+        print(labels_1.mean())
+
+        # return preds_1, preds_2
+
+
+class dMaSIFSiteModule(dMaSIFBaseModule):
+    def __init__(
+        self,
+        model: SiteModel,
+        learning_rate: float,
+    ):
+        super().__init__(model, learning_rate)
+        self.loss_fn = compute_site_loss
+
+    def training_step(self, batch: list[Tensor], batch_idx: int) -> Tensor | None:
+        xyz, normals, atom_coords, atom_types, labels = batch
+        logits = self.model(xyz, normals, atom_coords, atom_types)
+        loss = self.loss_fn(logits, labels)
+
+        if torch.isnan(loss):
+            return None
+        roc_auc = roc_auc_score(numpy(labels.view(-1)), numpy(logits.view(-1)))
+        self.log(
+            "loss/train",
+            loss,
+            on_step=True,
+            on_epoch=True,
+            prog_bar=True,
+            batch_size=1,
+        )
+        self.log(
+            "ROC_AUC/train",
+            roc_auc,
+            on_step=False,
+            on_epoch=True,
+            prog_bar=False,
+            batch_size=1,
+        )
+        return loss
+
+    def validation_step(self, batch: list[Tensor], batch_idx: int) -> None:
+        xyz, normals, atom_coords, atom_types, labels = batch
+        preds = self.model(xyz, normals, atom_coords, atom_types)
+        loss = self.loss_fn(preds, labels)
+
+        if not torch.isnan(loss):
+            roc_auc = roc_auc_score(numpy(labels.view(-1)), numpy(preds.view(-1)))
+            self.log("loss/val", loss, prog_bar=True, batch_size=1)
+            self.log("ROC_AUC/val", roc_auc, batch_size=1)
+
+    def test_step(self, batch: list[Tensor], batch_idx: int) -> None:
+        xyz, normals, atom_coords, atom_types, labels = batch
+        logits = self.model(xyz, normals, atom_coords, atom_types)
+        loss = self.loss_fn(logits, labels)
+        if not torch.isnan(loss):
+            roc_auc = roc_auc_score(numpy(labels), numpy(logits))
+            self.log("loss/test", loss, on_step=False, on_epoch=True, batch_size=1)
+            self.log(
+                "ROC_AUC/test", roc_auc, on_step=False, on_epoch=True, batch_size=1
+            )
+
+    def predict_step(self, batch: list[Tensor]) -> Tensor:
+        xyz, normals, atom_coords, atom_types = batch
+        logits = self.model(xyz, normals, atom_coords, atom_types)
+        preds = logits > 0
+        return preds
 
 
 def train(
-    mode: Mode,
     model: BaseModel,
-    train_cfg: TrainingConfig,
+    cfg: TrainingConfig,
     train_dataloader: DataLoader[Tensor],
     val_dataloader: DataLoader[Tensor],
-    checkpoint: str,
+    output_dir: str,
 ):
-    wandb_logger = TensorBoardLogger("dMaSIF_logs", name="my_model")
-    dmasif_model = dMaSIFTrainer(mode, model, train_cfg.lr, checkpoint)
+    """
+    Train the PyTorchLightning Module!
+    """
+
+    if isinstance(model, SiteModel):
+        pl_model = dMaSIFSiteModule(model, cfg.lr)
+    elif isinstance(model, SearchModel):
+        pl_model = dMaSIFSearchModule(model, cfg.lr)
+    else:
+        raise TypeError(
+            f"model must either be a 'SearchModel' or a 'SiteModel'. It cannot be a {type(model)}"
+        )
+
     trainer = Trainer(
         accelerator="auto",
         devices="auto",
         strategy="auto",
-        logger=wandb_logger,
-        max_epochs=train_cfg.n_epochs,
+        # profiler="simple",
+        logger=TensorBoardLogger(output_dir, name="", version=""),
+        accumulate_grad_batches=16,
+        max_epochs=cfg.n_epochs,
         callbacks=[
             EarlyStopping(monitor="loss/val", mode="min", patience=10),
             LearningRateMonitor("epoch"),
         ],
     )
-    trainer.fit(
-        dmasif_model, train_dataloaders=train_dataloader, val_dataloaders=val_dataloader
-    )
+    trainer.fit(pl_model, train_dataloader, val_dataloader)
+
+
+if __name__ == "__main__":
+    a = torch.tensor([[1, 2], [1, 2], [3, 4]], dtype=torch.float32)
+    b = torch.tensor([[1, 2], [1, 2], [3, 4]], dtype=torch.float32)
+
+    c = embeddings_to_labels(a, b)

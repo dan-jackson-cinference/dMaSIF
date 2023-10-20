@@ -1,16 +1,18 @@
-import torch
+from typing import TypeVar
+
 from torch import Tensor
 from torch.utils.data import DataLoader, Dataset, random_split
 
-from enums import Mode
-from protein import Protein
+from protein import Protein, ProteinPair, ProteinProtocol
+
+T = TypeVar("T")
 
 
-class ProteinDataset(Dataset[Protein]):
-    def __init__(self, data: list[Protein]):
+class ProteinDataset(Dataset[T]):
+    def __init__(self, data: list[T]):
         self.data = data
 
-    def __getitem__(self, index: int) -> Protein:
+    def __getitem__(self, index: int) -> T:
         return self.data[index]
 
     def __len__(self) -> int:
@@ -18,8 +20,8 @@ class ProteinDataset(Dataset[Protein]):
 
 
 def create_datasets(
-    train_data: list[Protein],
-    test_data: list[Protein],
+    train_data: list[ProteinProtocol],
+    test_data: list[ProteinProtocol],
     validation_fraction: float = 0.1,
 ):
     train_dataset = ProteinDataset(train_data)
@@ -37,41 +39,55 @@ def create_datasets(
 def collate_proteins(
     data: list[Protein],
 ) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor]:
-    protein = data[0]
+    protein_pair = data[0]
+
     return (
-        protein.surface_xyz,
-        protein.surface_normals,
-        protein.atom_coords,
-        protein.atom_types,
-        protein.surface_labels,
+        protein_pair.surface_xyz,
+        protein_pair.surface_normals,
+        protein_pair.atom_coords,
+        protein_pair.atom_types,
+        protein_pair.surface_labels,
     )
 
 
 def collate_protein_pairs(
-    data: list[tuple[Protein, Protein]]
-) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, float]:
-    protein_1, protein_2 = data[0]
+    data: list[ProteinPair],
+) -> tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int, Tensor]:
+    protein_pair = data[0]
 
     return (
-        torch.cat([protein_1.surface_xyz, protein_2.surface_xyz]),
-        torch.cat([protein_1.surface_normals, protein_2.surface_normals]),
-        torch.cat([protein_1.atom_coords, protein_2.atom_coords]),
-        torch.cat([protein_1.atom_types, protein_2.atom_types]),
-        torch.cat([protein_1.surface_labels, protein_2.surface_labels]),
-        len(protein_1.surface_xyz),
+        protein_pair.surface_xyz,
+        protein_pair.surface_normals,
+        protein_pair.atom_coords,
+        protein_pair.atom_types,
+        protein_pair.surface_labels,
+        protein_pair.split_idx,
+        protein_pair.if_labels,
+    )
+
+
+def collate_inference_proteins(
+    data: list[ProteinProtocol],
+) -> tuple[Tensor, Tensor, Tensor, Tensor, int]:
+    protein_data = data[0]
+    return (
+        protein_data.surface_xyz,
+        protein_data.surface_normals,
+        protein_data.atom_coords,
+        protein_data.atom_types,
+        protein_data.split_idx,
     )
 
 
 def create_dataloader(
-    dataset: ProteinDataset, mode: Mode, batch_size: int, split: str
+    dataset: ProteinDataset, batch_size: int, split: str, mode: str = "training"
 ) -> DataLoader[Tensor]:
     return DataLoader(
         dataset,
         batch_size,
         shuffle=split == "train",
-        collate_fn=COLLATE_FNS[mode],
+        collate_fn=collate_proteins
+        if mode == "training"
+        else collate_inference_proteins,
         num_workers=4,
     )
-
-
-COLLATE_FNS = {Mode.SEARCH: collate_protein_pairs, Mode.SITE: collate_proteins}

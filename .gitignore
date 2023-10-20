@@ -17,8 +17,7 @@ data_analysis/roc_curves
 data_analysis/.ipynb_checkpoints/
 .ipynb_checkpoints/
 surface_data/
-outputs/
-__pycache__/
-lightning_logs/
-dMaSIF_logs/
 surface_data_debug/
+__pycache__/
+
+

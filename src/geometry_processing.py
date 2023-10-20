@@ -81,8 +81,8 @@ def soft_distances(
         Tensor: (M,) values of the soft distance function on the points `y`.
     """
     # Build the (N, M, 1) symbolic matrix of squared distances:
-    x_i = LazyTensor(x[:, None, :])  # (N, 1, 3) atoms
-    y_j = LazyTensor(y[None, :, :])  # (1, M, 3) sampling points
+    x_i = LazyTensor(x[:, None, :].contiguous())  # (N, 1, 3) atoms
+    y_j = LazyTensor(y[None, :, :].contiguous())  # (1, M, 3) sampling points
     D_ij = ((x_i - y_j) ** 2).sum(-1)  # (N, M, 1) squared distances
 
     # Use a block-diagonal sparsity mask to support heterogeneous batch processing:
@@ -100,7 +100,7 @@ def soft_distances(
         smoothness = torch.sum(
             smoothness * atomtype_radii, dim=1, keepdim=False, dtype=torch.float32
         )  # n_atoms, 1
-        smoothness_i = LazyTensor(smoothness[:, None, None])
+        smoothness_i = LazyTensor(smoothness[:, None, None].contiguous())
 
         # Compute an estimation of the mean smoothness in a neighborhood
         # of each sampling point:
@@ -112,7 +112,7 @@ def soft_distances(
         #    (-D_ij.sqrt() / smoothness_i).logsumexp(dim=0)
         # ).view(-1)
         mean_smoothness = (-D_ij.sqrt()).exp().sum(0)
-        mean_smoothness_j = LazyTensor(mean_smoothness[None, :, :])
+        mean_smoothness_j = LazyTensor(mean_smoothness[None, :, :].contiguous())
         mean_smoothness = (
             smoothness_i * (-D_ij.sqrt()).exp() / mean_smoothness_j
         )  # n_atoms, n_points, 1
@@ -318,10 +318,10 @@ def mesh_normals_areas(vertices, triangles=None, scale=[1.0], batch=None, normal
         centers = vertices
 
     # Normal of a vertex = average of all normals in a ball of size "scale":
-    x_i = LazyTensor(vertices[:, None, :])  # (N, 1, 3)
-    y_j = LazyTensor(centers[None, :, :])  # (1, M, 3)
-    v_j = LazyTensor(V[None, :, :])  # (1, M, 3)
-    s = LazyTensor(scales[None, None, :])  # (1, 1, S)
+    x_i = LazyTensor(vertices[:, None, :].contiguous())  # (N, 1, 3)
+    y_j = LazyTensor(centers[None, :, :].contiguous())  # (1, M, 3)
+    v_j = LazyTensor(V[None, :, :].contiguous())  # (1, M, 3)
+    s = LazyTensor(scales[None, None, :].contiguous())  # (1, 1, S)
 
     D_ij = ((x_i - y_j) ** 2).sum(-1)  #  (N, M, 1)
     K_ij = (-D_ij / (2 * s**2)).exp()  # (N, M, S)
