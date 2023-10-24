@@ -11,7 +11,12 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from torch.utils.data import DataLoader
 
 from load_configs import TrainingConfig
-from loss import compute_search_loss, compute_site_loss, split_feature
+from loss import (
+    compute_search_loss,
+    compute_site_loss,
+    compute_search_loss_small,
+    split_feature,
+)
 from model import BaseModel, SearchModel, SiteModel
 
 
@@ -84,19 +89,21 @@ class dMaSIFBaseModule(LightningModule):
 class dMaSIFSearchModule(dMaSIFBaseModule):
     def __init__(self, model: SearchModel, learning_rate: float):
         super().__init__(model, learning_rate)
-        self.loss_fn = compute_search_loss
+        self.loss_fn = compute_search_loss_small
 
     def training_step(
         self,
         batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int, Tensor],
         batch_idx: int,
+        *args,
+        **kwargs,
     ) -> Tensor | None:
         xyz, normals, atom_coords, atom_types, labels, split_idx, if_labels = batch
         embed_1, embed_2 = self.model(xyz, normals, atom_coords, atom_types, split_idx)
         loss, preds = self.loss_fn(if_labels, labels, embed_1, embed_2, split_idx)
-
-        if torch.isnan(loss):
-            return None
+        # losses = self.all_gather(loss)
+        # if any(torch.isnan(loss) for loss in losses):
+        #     return None
         roc_auc = roc_auc_score(numpy(labels.view(-1)), numpy(preds.view(-1)))
         self.log(
             "loss/train",
@@ -105,6 +112,7 @@ class dMaSIFSearchModule(dMaSIFBaseModule):
             on_epoch=True,
             prog_bar=True,
             batch_size=1,
+            sync_dist=True,
         )
         self.log(
             "ROC_AUC/train",
@@ -113,6 +121,7 @@ class dMaSIFSearchModule(dMaSIFBaseModule):
             on_epoch=True,
             prog_bar=False,
             batch_size=1,
+            sync_dist=True,
         )
         return loss
 
@@ -127,8 +136,8 @@ class dMaSIFSearchModule(dMaSIFBaseModule):
 
         if not torch.isnan(loss):
             roc_auc = roc_auc_score(numpy(labels.view(-1)), numpy(preds.view(-1)))
-            self.log("loss/val", loss, prog_bar=True, batch_size=1)
-            self.log("ROC_AUC/val", roc_auc, batch_size=1)
+            self.log("loss/val", loss, prog_bar=True, batch_size=1, sync_dist=True)
+            self.log("ROC_AUC/val", roc_auc, batch_size=1, sync_dist=True)
 
     def test_step(
         self, batch: tuple[Tensor, Tensor, Tensor, Tensor, Tensor, int], batch_idx: int
@@ -181,6 +190,7 @@ class dMaSIFSiteModule(dMaSIFBaseModule):
             on_epoch=True,
             prog_bar=True,
             batch_size=1,
+            sync_dist=True,
         )
         self.log(
             "ROC_AUC/train",
@@ -189,6 +199,7 @@ class dMaSIFSiteModule(dMaSIFBaseModule):
             on_epoch=True,
             prog_bar=False,
             batch_size=1,
+            sync_dist=True,
         )
         return loss
 
@@ -199,8 +210,8 @@ class dMaSIFSiteModule(dMaSIFBaseModule):
 
         if not torch.isnan(loss):
             roc_auc = roc_auc_score(numpy(labels.view(-1)), numpy(preds.view(-1)))
-            self.log("loss/val", loss, prog_bar=True, batch_size=1)
-            self.log("ROC_AUC/val", roc_auc, batch_size=1)
+            self.log("loss/val", loss, prog_bar=True, batch_size=1, sync_dist=True)
+            self.log("ROC_AUC/val", roc_auc, batch_size=1, sync_dist=True)
 
     def test_step(self, batch: list[Tensor], batch_idx: int) -> None:
         xyz, normals, atom_coords, atom_types, labels = batch
@@ -208,9 +219,21 @@ class dMaSIFSiteModule(dMaSIFBaseModule):
         loss = self.loss_fn(logits, labels)
         if not torch.isnan(loss):
             roc_auc = roc_auc_score(numpy(labels), numpy(logits))
-            self.log("loss/test", loss, on_step=False, on_epoch=True, batch_size=1)
             self.log(
-                "ROC_AUC/test", roc_auc, on_step=False, on_epoch=True, batch_size=1
+                "loss/test",
+                loss,
+                on_step=False,
+                on_epoch=True,
+                batch_size=1,
+                sync_dist=True,
+            )
+            self.log(
+                "ROC_AUC/test",
+                roc_auc,
+                on_step=False,
+                on_epoch=True,
+                batch_size=1,
+                sync_dist=True,
             )
 
     def predict_step(self, batch: list[Tensor]) -> Tensor:

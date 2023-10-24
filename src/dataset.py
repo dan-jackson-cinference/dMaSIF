@@ -86,7 +86,7 @@ def create_dataloader(
         dataset,
         batch_size,
         shuffle=split == "train",
-        collate_fn=collate_proteins
+        collate_fn=collate_protein_pairs
         if mode == "training"
         else collate_inference_proteins,
         num_workers=4,

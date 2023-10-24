@@ -24,7 +24,7 @@ def protein_labels_valid(protein: Protein) -> bool:
     return (labels.sum() < 0.75 * len(labels)).item() and (labels.sum() > 30).item()
 
 
-def download(url: Path, target_dir: Path):
+def download(url: str, target_dir: Path):
     response = requests.get(str(url), stream=True, timeout=20)
     if response.status_code == 200:
         with open(target_dir, "wb") as f:
@@ -115,7 +115,10 @@ class SurfaceProcessor(ABC):
             root += "_debug"
         self.debug = debug
         self.raw_data_dir = Path(root) / "raw"
+        self.raw_data_dir.mkdir(parents=True, exist_ok=True)
         self.processed_data_dir = Path(root) / "processed"
+        self.processed_data_dir.mkdir(parents=True, exist_ok=True)
+
         self.tar_file = (
             self.raw_data_dir / "masif_site_masif_search_pdbs_and_ply_files.tar.gz"
         )
@@ -138,9 +141,10 @@ class SurfaceProcessor(ABC):
         )
 
     def download(self):
+        url = "https://zenodo.org/record/2625420/files/masif_site_masif_search_pdbs_and_ply_files.tar.gz"
         if not self.tar_file.exists():
             print("DOWNLOADING TAR FILE")
-            download(self.tar_file, self.raw_data_dir)
+            download(url, self.tar_file)
         else:
             print("TAR FILE ALREADY DOWNLOADED")
 
@@ -242,8 +246,8 @@ class SearchProcessor(SurfaceProcessor):
                     threshold=2.0,
                 )
 
-                protein_1.center_protein()
-                protein_2.center_protein()
+                # protein_1.center_protein()
+                # protein_2.center_protein()
 
                 protein_pair = ProteinPair(protein_1, protein_2, if_labels)
             except FileNotFoundError:
@@ -256,12 +260,14 @@ class SearchProcessor(SurfaceProcessor):
                 test_data.append(protein_pair)
 
         train_file = (
-            "search_train_data_debug.pickle"
+            "search_train_data_debug_not_centered.pickle"
             if self.debug
-            else "search_train_data.pickle"
+            else "search_train_data_not_centered.pickle"
         )
         test_file = (
-            "search_test_data_debug.pickle" if self.debug else "search_test_data.pickle"
+            "search_test_data_debug_not_centered.pickle"
+            if self.debug
+            else "search_test_data_not_centered.pickle"
         )
 
         pickle_dump(train_data, self.processed_data_dir / train_file)
@@ -271,15 +277,16 @@ class SearchProcessor(SurfaceProcessor):
         self,
     ) -> tuple[list[ProteinProtocol], list[ProteinProtocol]]:
         train_file = (
-            "search_train_data_debug.pickle"
+            "search_train_data_debug_not_centered.pickle"
             if self.debug
-            else "search_train_data.pickle"
+            else "search_train_data_not_centered.pickle"
         )
         test_file = (
-            "search_test_data_debug.pickle" if self.debug else "search_test_data.pickle"
+            "search_test_data_debug_not_centered.pickle"
+            if self.debug
+            else "search_test_data_not_centered.pickle"
         )
         if not (self.processed_data_dir / train_file).exists():
-            self.processed_data_dir.mkdir(exist_ok=True)
             self.download()
             self.extract()
             self.split()

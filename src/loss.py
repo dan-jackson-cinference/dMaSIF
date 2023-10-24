@@ -180,4 +180,71 @@ def compute_search_loss(
     return loss, torch.cat([logits_1, logits_2])
 
 
+def compute_search_loss_small(
+    if_labels: Tensor,
+    surface_labels: Tensor,
+    embedding_1: Tensor,
+    embedding_2: Tensor,
+    split_idx: int,
+):
+    labels_1, labels_2 = split_feature(surface_labels, split_idx)
+    p1_embed_1, p2_embed_1 = split_feature(embedding_1, split_idx)
+    p1_embed_2, p2_embed_2 = split_feature(embedding_2, split_idx)
+
+    n_sample = 64
+    if_feats_1 = p1_embed_1[labels_1 == 1]
+    if_feats_2 = p2_embed_2[labels_2 == 1]
+
+    if_samples_1 = torch.randperm(len(if_feats_1), device=if_feats_1.device)[:n_sample]
+    if_samples_2 = torch.randperm(len(if_feats_2), device=if_feats_2.device)[:n_sample]
+
+    if_sample_feats_1 = if_feats_1[if_samples_1]
+    if_sample_feats_2 = if_feats_2[if_samples_2]
+
+    labels_sample = if_labels.index_select(0, if_samples_1).index_select(
+        1, if_samples_2
+    )
+
+    neg_feats_1 = p1_embed_1[labels_1 == 0]
+    neg_samples_1 = torch.randperm(len(neg_feats_1), device=neg_feats_1.device)[
+        :n_sample
+    ]
+    neg_sample_feats_1 = p1_embed_1[neg_samples_1]
+    feats_1 = torch.cat([if_sample_feats_1, neg_sample_feats_1])
+
+    neg_feats_2 = p2_embed_2[labels_2 == 0]
+    neg_samples_2 = torch.randperm(len(neg_feats_2), device=neg_feats_2.device)[
+        :n_sample
+    ]
+    neg_sample_feats_2 = p2_embed_2[neg_samples_2]
+    feats_2 = torch.cat([if_sample_feats_2, neg_sample_feats_2])
+
+    feats = torch.matmul(feats_1, feats_2.T)
+
+    pairwise_labels = torch.zeros_like(feats)
+    pairwise_labels[: len(if_sample_feats_1), : len(if_sample_feats_2)] = labels_sample
+
+    n_total = pairwise_labels.numel()
+    n_pos = pairwise_labels.sum()
+    n_neg = n_total - n_pos
+    weighting = n_neg / n_pos
+
+    loss = F.binary_cross_entropy_with_logits(
+        feats, pairwise_labels, pos_weight=weighting
+    )
+    if torch.isnan(loss):
+        # print(feats.sum())
+        print(pairwise_labels.sum())
+        exit()
+
+    lazy_1 = LazyTensor(p1_embed_1[:, None, :])
+    lazy_2 = LazyTensor(p2_embed_2[None, :, :])
+
+    feats = lazy_1 | lazy_2
+    logits_1 = feats.max(1).squeeze()
+    logits_2 = feats.max(0).squeeze()
+
+    return loss, torch.cat([logits_1, logits_2])
+
+
 LOSS_FNS = {"search": compute_search_loss, "site": compute_site_loss}

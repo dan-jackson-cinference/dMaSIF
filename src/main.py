@@ -13,6 +13,8 @@ from pl_trainer import dMaSIFBaseModule, dMaSIFSearchModule, embeddings_to_label
 from process_data import PROCESSORS
 from protein import PDBInferenceProtein, ProteinPair
 
+torch.set_float32_matmul_precision("medium")
+
 
 def set_seed(seed: int) -> None:
     "Set all the seeds to ensure reproducibility"
