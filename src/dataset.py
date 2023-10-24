@@ -80,14 +80,12 @@ def collate_inference_proteins(
 
 
 def create_dataloader(
-    dataset: ProteinDataset, batch_size: int, split: str, mode: str = "training"
+    dataset: ProteinDataset, batch_size: int, split: str, mode: str = "search"
 ) -> DataLoader[Tensor]:
     return DataLoader(
         dataset,
         batch_size,
         shuffle=split == "train",
-        collate_fn=collate_protein_pairs
-        if mode == "training"
-        else collate_inference_proteins,
+        collate_fn=collate_protein_pairs if mode == "search" else collate_proteins,
         num_workers=4,
     )
