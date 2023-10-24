@@ -6,4 +6,4 @@ defaults:
 
 hydra:
   run:
-    dir: ./runs/${model.mode}/dMaSIF_${model.n_layers}_layers_${model.radius}A_radius_${model.emb_dims}_emb_dims/${now:%d-%m-%Y_%H:%M:%S}
+    dir: ./runs/${model.mode}/dMaSIF_${model.n_layers}_layers_${model.radius}A_radius_${model.emb_dims}_emb_dims/${now:%d-%m-%Y}/${now:%H:%M:%S}
